@@ -77,3 +77,13 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all
 ```
+
+## Release Workflow
+```bash
+# Prepare model cache layout
+scripts/release/bootstrap_models.sh
+
+# Build + package release artifact
+scripts/release/package_release.sh
+# or: scripts/release/package_release.sh x86_64-unknown-linux-gnu
+```

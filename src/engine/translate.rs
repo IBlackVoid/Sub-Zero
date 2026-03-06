@@ -255,6 +255,14 @@ impl Translator {
 
             let quality = assess_neural_translation_quality(&translated, &self.target_lang);
             if quality < min_quality {
+                let deficit = min_quality - quality;
+                if self.quality_profile == QualityProfile::Strict && deficit <= 0.015 {
+                    eprintln!(
+                        "warning: ibvoid-doom-qlock strict borderline quality accepted score={:.3} floor={:.3} deficit={:.3}",
+                        quality, min_quality, deficit
+                    );
+                    return Ok(translated);
+                }
                 if stage < plans.len() {
                     eprintln!(
                         "warning: ibvoid-doom-qlock mt_replan reason=quality stage={} score={:.3} floor={:.3}",
@@ -310,6 +318,7 @@ fn assess_neural_translation_quality(cues: &[SubtitleCue], target_lang: &str) ->
     let mut repeat = 0usize;
     let mut very_low_diversity = 0usize;
     let mut duplicates = 0usize;
+    let mut generic_duplicates = 0usize;
     let mut prev_line = String::new();
     let mut token_freq = std::collections::HashMap::<String, usize>::new();
     let mut line_freq = std::collections::HashMap::<String, usize>::new();
@@ -323,7 +332,11 @@ fn assess_neural_translation_quality(cues: &[SubtitleCue], target_lang: &str) ->
             .join(" ")
             .to_ascii_lowercase();
         if normalized == prev_line && !normalized.is_empty() {
-            duplicates += 1;
+            if is_generic_interjection_line(&normalized) {
+                generic_duplicates += 1;
+            } else {
+                duplicates += 1;
+            }
         }
         if !normalized.is_empty() {
             *line_freq.entry(normalized.clone()).or_insert(0) += 1;
@@ -361,7 +374,8 @@ fn assess_neural_translation_quality(cues: &[SubtitleCue], target_lang: &str) ->
     let malformed_ratio = malformed as f64 / total;
     let repeat_ratio = repeat as f64 / total;
     let low_div_ratio = very_low_diversity as f64 / total;
-    let duplicate_ratio = duplicates as f64 / total.max(1.0);
+    let duplicate_ratio =
+        ((duplicates as f64) + (generic_duplicates as f64 * 0.25)) / total.max(1.0);
     let lexical_collapse_penalty = lexical_collapse_penalty(&token_freq, total_tokens, cues.len());
     let line_repetition_penalty = line_repetition_penalty(&line_freq, cues.len());
 
@@ -397,14 +411,14 @@ fn lexical_collapse_penalty(
         / total_tokens as f64;
 
     let mut penalty = 0.0;
-    if unique_ratio < 0.035 {
-        penalty += ((0.035 - unique_ratio) / 0.035).min(1.0) * 0.9;
+    if unique_ratio < 0.030 {
+        penalty += ((0.030 - unique_ratio) / 0.030).min(1.0) * 0.8;
     }
-    if dominant_ratio > 0.10 {
-        penalty += ((dominant_ratio - 0.10) / 0.15).min(1.0) * 0.8;
+    if dominant_ratio > 0.12 {
+        penalty += ((dominant_ratio - 0.12) / 0.18).min(1.0) * 0.7;
     }
-    if question_loop_ratio > 0.12 {
-        penalty += ((question_loop_ratio - 0.12) / 0.20).min(1.0) * 0.7;
+    if question_loop_ratio > 0.15 {
+        penalty += ((question_loop_ratio - 0.15) / 0.25).min(1.0) * 0.5;
     }
     penalty.clamp(0.0, 1.4)
 }
@@ -431,11 +445,11 @@ fn line_repetition_penalty(
 
     let top_ratio = top_count as f64 / cue_count as f64;
     let mut penalty = 0.0;
-    if top_ratio > 0.03 {
-        penalty += ((top_ratio - 0.03) / 0.12).min(1.0) * 1.1;
+    if top_ratio > 0.04 {
+        penalty += ((top_ratio - 0.04) / 0.12).min(1.0) * 1.0;
     }
-    if is_generic_interjection_line(top_line) && top_ratio > 0.015 {
-        penalty += ((top_ratio - 0.015) / 0.10).min(1.0) * 0.9;
+    if is_generic_interjection_line(top_line) && top_ratio > 0.025 {
+        penalty += ((top_ratio - 0.025) / 0.12).min(1.0) * 0.5;
     }
     penalty.clamp(0.0, 1.6)
 }

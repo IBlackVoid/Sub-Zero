@@ -704,6 +704,37 @@ fn choose_mt_tuning(
         }
     }
 
+    if prefer_gpu {
+        let backend = hardware
+            .gpu
+            .as_ref()
+            .map(|gpu| gpu.backend.to_ascii_lowercase());
+        match backend.as_deref() {
+            Some("cuda") => {}
+            Some("rocm") => {
+                tuning.batch_size = ((tuning.batch_size as f64) * 0.85).round() as usize;
+                tuning.max_batch_tokens =
+                    ((tuning.max_batch_tokens as f64) * 0.85).round() as usize;
+                tuning.oom_retries = (tuning.oom_retries + 1).min(8);
+            }
+            Some("metal") => {
+                tuning.batch_size = ((tuning.batch_size as f64) * 0.75).round() as usize;
+                tuning.max_batch_tokens =
+                    ((tuning.max_batch_tokens as f64) * 0.75).round() as usize;
+                tuning.oom_retries = (tuning.oom_retries + 1).min(8);
+            }
+            Some(_) => {
+                tuning.batch_size = ((tuning.batch_size as f64) * 0.80).round() as usize;
+                tuning.max_batch_tokens =
+                    ((tuning.max_batch_tokens as f64) * 0.80).round() as usize;
+                tuning.oom_retries = (tuning.oom_retries + 1).min(8);
+            }
+            None => {}
+        }
+    }
+
+    tuning.batch_size = tuning.batch_size.max(4);
+    tuning.max_batch_tokens = tuning.max_batch_tokens.max(1024);
     tuning
 }
 
@@ -1794,10 +1825,10 @@ fn display_disk_mbps(value: Option<f64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        assess_output_health, build_knowledge_snapshot, default_mt_batch_for_profile,
-        default_mt_max_tokens_for_profile, duration_to_chunk_secs, parse_ffprobe_output,
-        ExecutionPlan, GpuProbe, HardwareProbe, HistoryStore, PlanLookupQuery, RunRecord,
-        WorkloadEstimate,
+        assess_output_health, build_knowledge_snapshot, choose_mt_tuning,
+        default_mt_batch_for_profile, default_mt_max_tokens_for_profile, duration_to_chunk_secs,
+        parse_ffprobe_output, ExecutionPlan, GpuProbe, HardwareProbe, HistoryStore,
+        PlanLookupQuery, RunRecord, WorkloadEstimate,
     };
     use crate::engine::pipeline::PipelineConfig;
     use crate::engine::transcribe::QualityProfile;
@@ -1882,6 +1913,38 @@ mod tests {
         assert_eq!(plan.chunk_duration_secs, 300.0);
         assert!(plan.mt_batch_size.expect("batch should be set") <= 16);
         assert!(plan.mt_max_batch_tokens.expect("max tokens should be set") <= 4096);
+    }
+
+    #[test]
+    fn mt_tuning_is_backend_aware() {
+        let cuda_hw = HardwareProbe {
+            cpu_cores: 8,
+            total_ram_mb: Some(16_384),
+            disk_write_mbps: Some(800.0),
+            gpu: Some(GpuProbe {
+                backend: "cuda".to_string(),
+                name: "RTX".to_string(),
+                vram_mb: Some(8_192),
+                compute_capability: Some("8.6".to_string()),
+            }),
+        };
+        let metal_hw = HardwareProbe {
+            cpu_cores: 8,
+            total_ram_mb: Some(16_384),
+            disk_write_mbps: Some(800.0),
+            gpu: Some(GpuProbe {
+                backend: "metal".to_string(),
+                name: "Apple GPU".to_string(),
+                vram_mb: Some(8_192),
+                compute_capability: None,
+            }),
+        };
+
+        let cuda = choose_mt_tuning(&cuda_hw, QualityProfile::Strict, true);
+        let metal = choose_mt_tuning(&metal_hw, QualityProfile::Strict, true);
+        assert!(metal.batch_size < cuda.batch_size);
+        assert!(metal.max_batch_tokens < cuda.max_batch_tokens);
+        assert!(metal.oom_retries >= cuda.oom_retries);
     }
 
     #[test]

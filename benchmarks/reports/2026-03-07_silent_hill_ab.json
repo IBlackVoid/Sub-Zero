@@ -1,0 +1,88 @@
+{
+  "generated_at": "2026-03-07",
+  "input": "SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs]",
+  "reference": "SUB-NOT-FROM-my-PROGRAME/SILENT HILL f #1 加藤小夏NOTFROMTHEPROGRAME.srt",
+  "strict_run": {
+    "command": "cargo run --release -- -i \"SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs].ja.srt\" --source-lang ja --lang en --offline --profile strict --gpu",
+    "wall_time_seconds": 302.4,
+    "status": "success",
+    "notes": [
+      "strict scene-rescue executed",
+      "mt_oom_retry executed once and recovered",
+      "strict borderline quality acceptance prevented final-stage abort"
+    ]
+  },
+  "candidates": [
+    {
+      "name": "SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs].en.srt",
+      "metrics": {
+        "reference_cues": 1499,
+        "hypothesis_cues": 1804,
+        "cue_count_match": false,
+        "aligned_pairs": 1804,
+        "time_coverage_ratio": 0.6835033571895859,
+        "weighted_timing_iou": 0.48830176204850817,
+        "non_empty_rate": 1.0,
+        "reference_char_similarity": 0.013025122016947631,
+        "line_char_similarity": 0.30671951004796477,
+        "token_overlap_f1": 0.6517803813461981,
+        "weighted_token_f1": 0.21501972209360465,
+        "cue_density_ratio": 1.204045558868178,
+        "japanese_char_ratio": 0.0,
+        "pass": false
+      }
+    },
+    {
+      "name": "SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs].strict-medium-audio.ja.en.srt",
+      "metrics": {
+        "reference_cues": 1499,
+        "hypothesis_cues": 1804,
+        "cue_count_match": false,
+        "aligned_pairs": 1804,
+        "time_coverage_ratio": 0.6835033571895859,
+        "weighted_timing_iou": 0.48830176204850817,
+        "non_empty_rate": 1.0,
+        "reference_char_similarity": 0.013025122016947631,
+        "line_char_similarity": 0.30671951004796477,
+        "token_overlap_f1": 0.6517803813461981,
+        "weighted_token_f1": 0.21501972209360465,
+        "cue_density_ratio": 1.204045558868178,
+        "japanese_char_ratio": 0.0,
+        "pass": false
+      }
+    },
+    {
+      "name": "SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs].ja.en.srt",
+      "metrics": {
+        "reference_cues": 1499,
+        "hypothesis_cues": 2157,
+        "cue_count_match": false,
+        "aligned_pairs": 2157,
+        "time_coverage_ratio": 0.6806423356259049,
+        "weighted_timing_iou": 0.3960209682487526,
+        "non_empty_rate": 1.0,
+        "reference_char_similarity": 0.011922694329970158,
+        "line_char_similarity": 0.287553972691521,
+        "token_overlap_f1": 0.6379555134879319,
+        "weighted_token_f1": 0.19420263189459133,
+        "cue_density_ratio": 1.4395875345920255,
+        "japanese_char_ratio": 0.0,
+        "pass": false
+      }
+    }
+  ],
+  "ranking": [
+    "SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs].en.srt",
+    "SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs].strict-medium-audio.ja.en.srt",
+    "SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs].ja.en.srt"
+  ],
+  "gap_summary": {
+    "largest_gap": "cue segmentation and timing style mismatch vs reference",
+    "secondary_gap": "lexical style divergence in short conversational cues",
+    "next_focus": [
+      "optional style-matching segmentation mode",
+      "time-warp post-pass to align cue boundaries to reference-like pacing",
+      "phrase-level style normalization for short interjections"
+    ]
+  }
+}
