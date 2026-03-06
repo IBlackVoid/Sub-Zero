@@ -39,7 +39,7 @@ This is not a “look, I made an app” project.
 This is a **real frustration turned into a serious system**.
 
 <p align="center">
-  <img src="assets/readme/haruhi-story.gif" alt="Haruhi story divider" width="760" />
+  <img src="assets/readme/haruhi-story.gif" alt="Haruhi story divider" width="960" />
 </p>
 
 ---
