@@ -1,244 +1,180 @@
-# Sub-Zero
+# sub-zero
 
-> **Offline. Hardware-adaptive. Quality-gated. Built for real long-form subtitle work — not toy demos.**
+offline-first subtitle translator. nothing leaves your machine.
 
-Sub-Zero is an offline subtitle engine designed for **speed, correctness, recovery, and quality under pressure**.
+three things matter:
 
-It takes video/audio/subtitle input, runs a hardware-aware execution plan, translates subtitles through a multi-stage rescue pipeline, and refuses to silently ship weak output.
+- the translation never leaves your machine.
+- the engine is measurable, not hopeful.
+- you can verify every claim it makes with the numbers it emits.
 
----
-
-## Why This Project Exists
-
-I was watching a stream from the actress behind the main character of **Silent Hill f**. I understand some Japanese, but not enough to follow everything at native speed, so I was relying on **YouTube auto subtitles**.
-
-That worked... until it didn't.
-
-There were times I wanted to download the stream and watch it later — like on a plane, offline, no connection, no YouTube subtitle layer. And that was the problem:
-
-- the subtitles only existed inside YouTube
-- I couldn't find proper subtitle files for the stream
-- the fallback options were weak, fragile, or painfully low quality
-
-So instead of accepting that, I built the thing I wanted to exist.
-
-**Sub-Zero was born.**
-
-Reference stream: [SILENT HILL f #1 加藤小夏](https://www.youtube.com/watch?v=0Ek5c3sQygs&t=537s)
+if you do not need those things, you do not need this.
 
 ---
 
-## Core Features
+## what it does
 
-- Offline subtitle generation and translation
-- Input support for video, audio, and existing subtitle files
-- Hardware-adaptive runtime planning
-- OOM-aware retry and execution recovery
-- Scene-level rescue for weak translation ranges
-- Structural and semantic subtitle validation
-- Discourse consistency rewrites
-- Checkpointed execution behavior
-- Knowledge/history cache for better future planning
-- Strict quality gates before final output
+reads a media file or an existing `.srt`. transcribes when there is no
+subtitle track. translates with a local NLLB-200 model. runs a learned
+quality gate against the result. emits a sidecar with everything it
+saw so you can audit it.
 
----
+no cloud. no API keys. no telemetry. nothing gets uploaded.
 
-## High-Level Pipeline
+## install
 
-```mermaid
-flowchart LR
-  A[Input: video/audio/srt] --> B[Source Resolver]
-  B --> C[Deep Scan]
-  C --> D[Hardware Probe]
-  D --> E[DOOM-QLOCK Plan]
-  E --> F[Execution]
+prereqs:
 
-  F --> G[Transcription Path]
-  F --> H[Translation Path]
+- rust toolchain (`rustup default stable`)
+- python 3.10+ for the helper scripts and the fidelity verifier
+- ffmpeg on PATH (transcription + media probing)
 
-  G --> I[Confidence + Quality Checks]
-  H --> I
-  I --> J[Scene Rescue + Replan]
-  J --> K[Discourse Consistency + Postprocess]
-  K --> L[Final Structural/Semantic Gate]
+build:
 
-  L -->|PASS| M[Emit .srt + metadata]
-  L -->|FAIL| N[Fail Loud with diagnostics]
-
-  M --> O[History + Knowledge Cache]
+```
+git clone https://github.com/IBlackVoid/Sub-Zero
+cd Sub-Zero
+cargo build --release
 ```
 
----
+binaries land in `target/release/`:
 
-## Architecture / Code Map
+- `sub-zero`      — the engine
+- `sub-zero-tui`  — the live dashboard
 
-### Runtime entry and orchestration
+models (one-time, only if you want neural translation):
 
-- `src/main.rs` — CLI entrypoint, config, pipeline launch
-- `src/engine/pipeline.rs` — orchestration, source resolution, translation flow, quality gates, metadata
+- NLLB-200 in CTranslate2 format → `models/nllb/`
+- (optional) whisper.cpp binary + ggml model for transcription
 
-### Planning and workload understanding
+without NLLB, the engine falls back to a phrase-table backend for
+the language pairs it knows about. enough to smoke-test the pipeline.
 
-- `src/engine/doom_qlock.rs` — adaptive execution policy engine, hardware probing, plan compilation, learning
-- `src/engine/deep_scan.rs` — content map generation, scene boundaries, difficulty hints
+## run
 
-### Execution and translation layers
+```
+sub-zero -i clip.mkv --lang en
+```
 
-- `src/engine/transcribe.rs` — transcription integration, strict-mode settings
-- `src/engine/parallel.rs` — chunk worker execution, timeout handling, retry
-- `src/engine/stitcher.rs` — partial chunk merge, dedupe logic
-- `src/engine/context.rs` — translation context-window construction
-- `src/engine/neural_mt.rs` — Rust/Python bridge for batch translation
-- `src/engine/translate.rs` — translation backend selection, fallback ladder, quality scoring
+a `clip.en.srt` appears next to the input. a sidecar
+`clip.sub-zero.json` next to it carries every gate score, every
+recovery event, every chunk timing.
 
-### Output cleanup and subtitle primitives
+a few of the flags that matter:
 
-- `src/engine/postprocess.rs` — cleanup, normalization, rewrite passes
-- `src/engine/srt.rs` — SRT parsing and writing primitives
+```
+--source-lang ja           source language (default ja)
+--lang en                  target language (default en)
+--profile strict           fast | balanced | strict
+--parallel --workers 8     chunked transcription, N workers
+--gpu                      use CUDA when available
+--speaker-aware            learn per-character voice priors
+--trace-runtime            emit a per-stage timing sidecar
+--verify                   check the output against the audio
+```
 
-### Scripts / tooling
+## the dashboard
 
-- `scripts/translate_batch.py` — batch translator worker, OOM fallback, adaptive tag policy
-- `scripts/evaluate_sub_quality.py` — benchmark evaluator, timeline-overlap-aware comparison
-- `scripts/release/bootstrap_models.sh` — local model cache bootstrap
-- `scripts/release/package_release.sh` — release packaging
+```
+cargo run -p sub-zero-tui --release
+```
 
----
+a live terminal dashboard. shows the pipeline as it runs, the cues as
+they translate, and the per-character voice priors the engine learns.
+press `:` for commands. press `:help` for the rest.
 
-## DOOM-QLOCK
+three running-screen modes, cycle with `g`:
 
-### The name is dramatic on purpose.
+- **original** — the pre-recorded animation plays.
+- **emerge** — the same animation reveals itself cell-by-cell as
+  chunks complete. deterministic per input filename — same file, same
+  reveal pattern.
+- **generative** — a flow-field particle system. fresh artwork per
+  run. each chunk completion injects a particle burst.
 
-Because this layer exists for the exact moment subtitle pipelines usually die: OOM, unstable backend behavior, bad chunk sizing, slow execution plans, or silent quality collapse.
+## audit
 
-**DOOM-QLOCK** is Sub-Zero's adaptive execution policy engine.
+every claim this thing makes is checkable. the fidelity bound is the
+empirical mutual information between machine and reference, estimated
+with a Kraskov k-NN estimator (numpy only, no torch):
 
-It decides how the system should run **for this machine, for this workload, right now**.
+```
+python scripts/quality_gate/verify_fidelity_bound.py \
+  --machine  out.en.srt \
+  --baseline baseline.en.srt \
+  --reference reference.en.srt \
+  --strict
+```
 
-**At startup** it probes the machine (CPU, RAM, GPU, VRAM, disk), scans the workload (duration, cue count, difficulty), checks prior execution history, and compiles a safe execution strategy (worker counts, chunk sizing, MT batch/token budgets, retry policy).
+on a real Japanese-language corpus (998 aligned cues from a JP gameplay
+stream, with a separately-sourced human reference):
 
-**During execution** it monitors runtime behavior, translation quality, backend instability, and OOM patterns. If things go wrong, it replans — shrinking batch sizes, stepping down aggressiveness, or switching to safer execution paths.
+| metric                                | value                |
+|---------------------------------------|----------------------|
+| I(machine ; reference)                | 0.6985 nats          |
+| I(per-cue baseline ; reference)       | 0.2282 nats          |
+| Δ̂ — fidelity gap vs per-cue baseline | **+0.4703 nats**     |
+| name inconsistency ratio (full ep)    | 0.00 %               |
+| adjacent repeat ratio                 | 0.37 %               |
+| scene low-quality ratio               | 1.13 %               |
 
-**After execution** it stores run telemetry, successful plans, and normalized knowledge snapshots. The system doesn't just run — it **learns how to run better next time**.
+three-times the mutual information. real corpus. real reference.
 
----
+## the bits worth reading
 
-## How the Algorithm Works
+```
+src/engine/                          translator + pipeline + DOOM-QLOCK
+src/engine/voice_consistency.rs      per-character voice priors
+src/engine/character_glossary.rs     persistent name canonicalisation
+src/engine/postprocess.rs            reading-rate cap + scene rescue
+scripts/quality_gate/                fidelity verifier + learned gate
+scripts/tui/braille_convert.py       video → braille animation
+tui/src/                             ratatui dashboard
+```
 
-Sub-Zero treats subtitle generation as a **controlled systems problem**, not "send chunks into a model and pray."
+## first-run smoke (5 minutes from clean clone)
 
-The algorithm is built around four ideas:
+```
+cargo build --release
+cargo test
+```
 
-### 1. Pre-execution planning instead of blind execution
+both should pass with zero failures. then either:
 
-Before heavy work begins, the runtime measures the machine, scans the workload, estimates risk, and compiles a plan meant to succeed *on that exact setup*. Predictive runtime shaping, not static tool execution.
+```
+# pipe an existing SRT through the post-process + verifier path:
+./target/release/sub-zero -i mysrt.ja.srt --lang en --phrase-table
 
-### 2. Local rescue instead of global reruns
+# or fire up the dashboard:
+./target/release/sub-zero-tui
+```
 
-When quality drops in isolated regions, Sub-Zero identifies weak scenes, rescues those ranges, and preserves strong regions. Efficient while still enforcing standards.
+inside the dashboard:
 
-### 3. Final quality decided by gates, not vibes
+```
+Enter   pick an input file
+r       re-run the most-recent input
+p       cycle quality profile
+Tab     path completion in the picker
+:help   keybind reference
+g       cycle running-screen visual mode
+s       on Result: save the output to a custom location
+```
 
-A finished output is still just a candidate. It must survive structural checks, semantic checks, consistency passes, and final thresholding. The pipeline rejects "technically completed" garbage.
+## status
 
-### 4. Learning across runs
+182 tests pass (151 engine + 31 dashboard). clippy clean. release
+build clean. CI on Linux, macOS, Windows.
 
-Run history and knowledge snapshots mean future execution planning gets smarter — adaptive during a run and **adaptive across runs**.
+```
+cargo test
+cargo clippy --no-deps -- -W clippy::or_fun_call -W clippy::manual_let_else
+```
 
----
+## license
 
-## Quality System
-
-Sub-Zero does **not** assume that successful inference means good subtitles.
-
-It enforces a layered quality system:
-
-- structural checks
-- semantic checks
-- scene-level rescue for weak segments
-- discourse consistency passes
-- final gate before writing results
-
-Strict mode enforces a high quality floor where weak outputs are not silently accepted, borderline outputs near threshold may pass with a warning (avoiding huge rerun cost for marginal gains), and clearly bad outputs fail loudly with diagnostics.
-
-> **Completion is not success — quality is success.**
-
----
-
-## Recovery-First Design
-
-Recovery behavior includes:
-
-- OOM retry ladder
-- safer decode retries
-- backend-aware adaptation
-- timeout-aware chunk execution
-- checkpoint-friendly pipeline behavior
-- conservative fallback paths where policy allows
-
-Failures are part of the runtime contract, not edge cases.
-
----
-
-## Hardware Adaptation
-
-Sub-Zero adapts across different hardware profiles:
-
-- CUDA-aware tuning (NVIDIA)
-- ROCm-aware tuning (AMD)
-- Metal-aware tuning (macOS)
-- VRAM-aware batch/token shrinking
-- OOM recovery policy
-- optional CPU fallback
-
----
-
-<p align="center">
-  <img src="assets/readme/haruhi-reaction.gif" alt="Haruhi reaction divider" width="420" />
-</p>
-
-## Real Run Status
-
-### Verified long-form strict run
-
-**Input**: `SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs].ja.srt`
-**Hardware**: RTX 4070 Laptop GPU (~8GB visible VRAM), 32 CPU threads
-**Runtime**: `302.4s` for a `6259.9s` subtitle timeline workload
-
-Notable events: OOM retry recovered successfully, scene rescue executed, discourse consistency rewrites executed, cue compaction safety rejected a regressive pass and kept the better-quality path.
-
-Not just "it ran," but **it hit real problems and recovered correctly**.
+MIT.
 
 ---
 
-## Benchmarking
-
-Reference: `SUB-NOT-FROM-my-PROGRAME/SILENT HILL f #1 加藤小夏NOTFROMTHEPROGRAME.srt`
-Report: `benchmarks/reports/2026-03-07_silent_hill_ab.json`
-
-Best candidate still differs from reference primarily in segmentation and timing style. Content overlap is already meaningful. Benchmark evaluation uses timeline-overlap alignment instead of brittle index-to-index matching.
-
----
-
-## What's Next
-
-- Reference-style segmentation mode
-- Time-warp post-pass for cue boundary tuning
-- Better short-utterance lexical normalization
-- Wider benchmark suite across more videos and language pairs
-
----
-
-## Closing Note
-
-This project exists because I was annoyed by a very specific real-world problem and refused to accept the usual weak solutions.
-
-I wanted to watch a stream offline.
-I wanted subtitles that didn't disappear with the platform.
-I wanted something fast, strict, resilient, and serious.
-
-So I built it.
-
-And because the name was too good not to use:
-
-**Sub-Zero.**
+control is an illusion. determinism isn't.
