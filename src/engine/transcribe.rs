@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::engine::media;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Backend {
     WhisperCpp,
@@ -16,15 +18,33 @@ pub enum QualityProfile {
     Strict,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QualityProfileParseError {
+    InvalidValue { value: String },
+}
+
+impl std::fmt::Display for QualityProfileParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidValue { value } => write!(
+                f,
+                "invalid profile: {value} (expected one of: fast, balanced, strict)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for QualityProfileParseError {}
+
 impl QualityProfile {
-    pub fn parse(value: &str) -> Result<Self, String> {
+    pub fn parse(value: &str) -> Result<Self, QualityProfileParseError> {
         match value.to_ascii_lowercase().as_str() {
             "fast" => Ok(Self::Fast),
             "balanced" => Ok(Self::Balanced),
             "strict" => Ok(Self::Strict),
-            other => Err(format!(
-                "invalid profile: {other} (expected one of: fast, balanced, strict)"
-            )),
+            _ => Err(QualityProfileParseError::InvalidValue {
+                value: value.to_string(),
+            }),
         }
     }
 
@@ -56,6 +76,8 @@ pub struct TranscribeConfig {
     pub source_lang: String,
     pub target_lang: String,
     pub whisper_args: Vec<String>,
+    pub audio_lang: Option<String>,
+    pub audio_stream_index: Option<usize>,
     pub vad: bool,
     pub vad_threshold_db: f64,
     pub vad_min_silence: f64,
@@ -82,8 +104,43 @@ pub struct TranscriptionResult {
     pub audio_wav_path: PathBuf,
 }
 
+#[derive(Debug)]
+pub enum TranscribeError {
+    Initialization { source: String },
+    Transcription { input: PathBuf, source: String },
+    Probe { input: PathBuf, source: String },
+}
+
+pub type TranscribeResult<T> = Result<T, TranscribeError>;
+
+impl std::fmt::Display for TranscribeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Initialization { source } => {
+                write!(f, "failed to initialize transcriber: {source}")
+            }
+            Self::Transcription { input, source } => {
+                write!(f, "failed to transcribe {}: {source}", input.display())
+            }
+            Self::Probe { input, source } => {
+                write!(
+                    f,
+                    "failed to probe media duration for {}: {source}",
+                    input.display()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for TranscribeError {}
+
 impl Transcriber {
-    pub fn new(config: TranscribeConfig) -> Result<Option<Self>, String> {
+    pub fn new(config: TranscribeConfig) -> TranscribeResult<Option<Self>> {
+        Self::new_inner(config).map_err(|source| TranscribeError::Initialization { source })
+    }
+
+    fn new_inner(config: TranscribeConfig) -> Result<Option<Self>, String> {
         if !config.enabled {
             return Ok(None);
         }
@@ -156,10 +213,18 @@ impl Transcriber {
         }))
     }
 
-    pub fn transcribe_video_to_srt(&self, video: &Path) -> Result<TranscriptionResult, String> {
+    pub fn transcribe_video_to_srt(&self, video: &Path) -> TranscribeResult<TranscriptionResult> {
+        self.transcribe_video_to_srt_inner(video)
+            .map_err(|source| TranscribeError::Transcription {
+                input: video.to_path_buf(),
+                source,
+            })
+    }
+
+    fn transcribe_video_to_srt_inner(&self, video: &Path) -> Result<TranscriptionResult, String> {
         let temp_dir = create_temp_dir(video)?;
         let wav_path = temp_dir.join("audio.wav");
-        extract_audio_to_wav(video, &wav_path)?;
+        extract_audio_to_wav(video, &wav_path, &self.config)?;
 
         let srt_path = self.transcribe_wav_to_srt_internal(&wav_path, &temp_dir, None)?;
 
@@ -172,7 +237,15 @@ impl Transcriber {
     /// Transcribe an already-extracted mono 16k WAV.
     /// This avoids redundant ffmpeg extraction in chunked/parallel pipelines.
     #[allow(dead_code)]
-    pub fn transcribe_wav_to_srt(&self, wav_path: &Path) -> Result<PathBuf, String> {
+    pub fn transcribe_wav_to_srt(&self, wav_path: &Path) -> TranscribeResult<PathBuf> {
+        self.transcribe_wav_to_srt_inner(wav_path)
+            .map_err(|source| TranscribeError::Transcription {
+                input: wav_path.to_path_buf(),
+                source,
+            })
+    }
+
+    fn transcribe_wav_to_srt_inner(&self, wav_path: &Path) -> Result<PathBuf, String> {
         if !wav_path.is_file() {
             return Err(format!("wav input does not exist: {}", wav_path.display()));
         }
@@ -183,6 +256,18 @@ impl Transcriber {
     }
 
     pub fn transcribe_wav_to_srt_with_timeout(
+        &self,
+        wav_path: &Path,
+        timeout_secs: f64,
+    ) -> TranscribeResult<PathBuf> {
+        self.transcribe_wav_to_srt_with_timeout_inner(wav_path, timeout_secs)
+            .map_err(|source| TranscribeError::Transcription {
+                input: wav_path.to_path_buf(),
+                source,
+            })
+    }
+
+    fn transcribe_wav_to_srt_with_timeout_inner(
         &self,
         wav_path: &Path,
         timeout_secs: f64,
@@ -209,14 +294,12 @@ impl Transcriber {
     ) -> Result<PathBuf, String> {
         match self.backend {
             Backend::WhisperCpp => {
-                let whisper_bin = self
-                    .whisper_cpp_bin
-                    .as_ref()
-                    .expect("validated in constructor");
-                let whisper_model = self
-                    .whisper_cpp_model
-                    .as_ref()
-                    .expect("validated in constructor");
+                let whisper_bin = self.whisper_cpp_bin.as_ref().ok_or_else(|| {
+                    "whisper.cpp backend is active but binary path is missing".to_string()
+                })?;
+                let whisper_model = self.whisper_cpp_model.as_ref().ok_or_else(|| {
+                    "whisper.cpp backend is active but model path is missing".to_string()
+                })?;
                 let stem = wav_path
                     .file_stem()
                     .and_then(OsStr::to_str)
@@ -244,19 +327,19 @@ impl Transcriber {
                 Ok(srt_path)
             }
             Backend::PyWhisper => {
-                let model_dir = self
-                    .py_model_dir
-                    .as_ref()
-                    .expect("validated in constructor");
+                let model_dir = self.py_model_dir.as_ref().ok_or_else(|| {
+                    "python whisper backend is active but model directory is missing".to_string()
+                })?;
+                let python_bin = self.python_bin.as_deref().ok_or_else(|| {
+                    "python whisper backend is active but Python interpreter is missing".to_string()
+                })?;
                 let result = run_python_whisper(
                     wav_path,
                     out_dir,
                     &self.config,
                     &self.py_model_name,
                     model_dir,
-                    self.python_bin
-                        .as_deref()
-                        .expect("validated in constructor"),
+                    python_bin,
                     timeout,
                 );
                 match result {
@@ -279,9 +362,7 @@ impl Transcriber {
                             &cpu_retry,
                             &self.py_model_name,
                             model_dir,
-                            self.python_bin
-                                .as_deref()
-                                .expect("validated in constructor"),
+                            python_bin,
                             timeout,
                         )
                     }
@@ -546,33 +627,17 @@ fn create_temp_dir(video: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn extract_audio_to_wav(video: &Path, wav_out: &Path) -> Result<(), String> {
-    let ffmpeg = find_in_path(&["ffmpeg", "ffmpeg.exe"])
-        .ok_or_else(|| "ffmpeg not found in PATH (required for --transcribe)".to_string())?;
-
-    let status = Command::new(ffmpeg)
-        .arg("-hide_banner")
-        .arg("-nostdin")
-        .arg("-v")
-        .arg("error")
-        .arg("-y")
-        .arg("-i")
-        .arg(video)
-        .arg("-vn")
-        .arg("-ac")
-        .arg("1")
-        .arg("-ar")
-        .arg("16000")
-        .arg("-f")
-        .arg("wav")
-        .arg(wav_out)
-        .status()
-        .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
-
-    if !status.success() {
-        return Err(format!("ffmpeg failed with status: {status}"));
-    }
-    Ok(())
+fn extract_audio_to_wav(
+    video: &Path,
+    wav_out: &Path,
+    config: &TranscribeConfig,
+) -> Result<(), String> {
+    media::extract_audio_to_wav(
+        video,
+        wav_out,
+        config.audio_stream_index,
+        config.audio_lang.as_deref(),
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -603,8 +668,11 @@ pub(crate) fn detect_speech_intervals_from_wav(
 }
 
 /// Public wrapper so the pipeline module can probe audio duration.
-pub fn ffprobe_duration_seconds_pub(path: &Path) -> Result<f64, String> {
-    ffprobe_duration_seconds(path)
+pub fn ffprobe_duration_seconds_pub(path: &Path) -> TranscribeResult<f64> {
+    ffprobe_duration_seconds(path).map_err(|source| TranscribeError::Probe {
+        input: path.to_path_buf(),
+        source,
+    })
 }
 
 fn ffprobe_duration_seconds(path: &Path) -> Result<f64, String> {
@@ -962,30 +1030,93 @@ fn run_command_with_timeout(
     timeout: Option<Duration>,
 ) -> Result<(), String> {
     if let Some(limit) = timeout {
+        // Capture stderr so callers can scan it for diagnostic patterns
+        // (CUDA OOM, allocator faults). Stdout is left inherited so live
+        // progress bars still reach the user's terminal.
+        cmd.stderr(Stdio::piped());
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("failed to spawn {label}: {e}"))?;
-        let start = Instant::now();
-        loop {
-            if let Some(status) = child
-                .try_wait()
-                .map_err(|e| format!("failed to wait for {label}: {e}"))?
-            {
-                if status.success() {
-                    return Ok(());
+
+        let stderr_handle = child.stderr.take();
+        let drain: Option<std::thread::JoinHandle<Vec<u8>>> = stderr_handle.map(|mut s| {
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut buf = Vec::with_capacity(8192);
+                let mut tmp = [0u8; 4096];
+                loop {
+                    match s.read(&mut tmp) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            // Mirror to our stderr so progress is still visible,
+                            // and accumulate for post-mortem inspection.
+                            let _ = std::io::Write::write_all(
+                                &mut std::io::stderr(),
+                                &tmp[..n],
+                            );
+                            buf.extend_from_slice(&tmp[..n]);
+                            // Keep the captured tail bounded so OOM in long
+                            // runs doesn't itself OOM the parent.
+                            const MAX_CAPTURE: usize = 64 * 1024;
+                            if buf.len() > MAX_CAPTURE {
+                                let drop_n = buf.len() - MAX_CAPTURE;
+                                buf.drain(0..drop_n);
+                            }
+                        }
+                        Err(_) => break,
+                    }
                 }
-                return Err(format!("{label} failed with status: {status}"));
+                buf
+            })
+        });
+
+        let start = Instant::now();
+        let outcome: Result<(), String> = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.success() {
+                        break Ok(());
+                    }
+                    break Err(format!("{label} failed with status: {status}"));
+                }
+                Ok(None) => {}
+                Err(e) => break Err(format!("failed to wait for {label}: {e}")),
             }
             if start.elapsed() >= limit {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
+                break Err(format!(
                     "{label} timed out after {:.1}s",
                     limit.as_secs_f64()
                 ));
             }
             std::thread::sleep(Duration::from_millis(200));
-        }
+        };
+
+        let stderr_buf = drain
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default();
+
+        return match outcome {
+            Ok(()) => Ok(()),
+            Err(base) => {
+                let trimmed = String::from_utf8_lossy(&stderr_buf)
+                    .trim()
+                    .to_string();
+                if trimmed.is_empty() {
+                    Err(base)
+                } else {
+                    // Limit the appended tail to keep error strings readable.
+                    let tail = if trimmed.len() > 2048 {
+                        let cut = trimmed.len() - 2048;
+                        format!("...{}", &trimmed[cut..])
+                    } else {
+                        trimmed
+                    };
+                    Err(format!("{base}: {tail}"))
+                }
+            }
+        };
     }
 
     let output = cmd
@@ -1003,6 +1134,7 @@ fn run_command_with_timeout(
     }
     Ok(())
 }
+
 
 fn python_cuda_available(python_bin: &str) -> Result<bool, String> {
     let output = Command::new(python_bin)
@@ -1217,6 +1349,14 @@ fn is_cuda_oom_transcribe_error(error: &str) -> bool {
     lowered.contains("cuda out of memory")
         || (lowered.contains("cuda") && lowered.contains("out of memory"))
         || lowered.contains("torch.outofmemoryerror")
+        || lowered.contains("torch.cuda.outofmemoryerror")
+        // Windows STATUS_STACK_BUFFER_OVERRUN. In our 8 GB RTX 4070 Laptop
+        // corpus runs it consistently coincided with VRAM pressure inside
+        // the python-whisper subprocess; treat it as a probable OOM so the
+        // CPU-fallback retry path engages instead of bubbling the chunk up
+        // as a hard failure.
+        || lowered.contains("0xc0000409")
+        || lowered.contains("status_stack_buffer_overrun")
 }
 
 fn find_in_path(candidates: &[&str]) -> Option<PathBuf> {
@@ -1247,6 +1387,8 @@ mod tests {
             source_lang: "ja".to_string(),
             target_lang: "en".to_string(),
             whisper_args: Vec::new(),
+            audio_lang: None,
+            audio_stream_index: None,
             vad: false,
             vad_threshold_db: -35.0,
             vad_min_silence: 0.35,
@@ -1275,6 +1417,8 @@ mod tests {
             source_lang: "ja".to_string(),
             target_lang: "en".to_string(),
             whisper_args: Vec::new(),
+            audio_lang: None,
+            audio_stream_index: None,
             vad: false,
             vad_threshold_db: -35.0,
             vad_min_silence: 0.35,
@@ -1284,6 +1428,38 @@ mod tests {
             quality_profile: super::QualityProfile::Balanced,
         })
         .expect_err("should fail without model");
-        assert!(error.contains("missing --whisper-model"));
+        assert!(error.to_string().contains("missing --whisper-model"));
+    }
+
+    #[test]
+    fn cuda_oom_detector_catches_known_patterns() {
+        // Standard PyTorch OOM message.
+        assert!(super::is_cuda_oom_transcribe_error(
+            "RuntimeError: CUDA error: out of memory"
+        ));
+        // Lower-cased form sometimes seen on driver allocator paths.
+        assert!(super::is_cuda_oom_transcribe_error(
+            "torch.cuda.OutOfMemoryError: CUDA out of memory."
+        ));
+        // Windows STATUS_STACK_BUFFER_OVERRUN: the parent only sees the hex code.
+        assert!(super::is_cuda_oom_transcribe_error(
+            "python whisper failed with status: exit code: 0xC0000409"
+        ));
+        assert!(super::is_cuda_oom_transcribe_error(
+            "STATUS_STACK_BUFFER_OVERRUN encountered"
+        ));
+    }
+
+    #[test]
+    fn cuda_oom_detector_rejects_unrelated_failures() {
+        assert!(!super::is_cuda_oom_transcribe_error(
+            "python whisper timed out after 180.0s"
+        ));
+        assert!(!super::is_cuda_oom_transcribe_error(
+            "ffmpeg failed: invalid stream index"
+        ));
+        assert!(!super::is_cuda_oom_transcribe_error(
+            "no cues found in SRT"
+        ));
     }
 }

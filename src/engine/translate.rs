@@ -28,6 +28,7 @@ pub struct Translator {
     target_lang: String,
     offline: bool,
     quality_profile: QualityProfile,
+    enforce_quality_floor: bool,
     backend: TranslatorBackend,
     neural_config: Option<NeuralMTConfig>,
 }
@@ -40,36 +41,75 @@ pub struct TranslatorConfig {
     pub force_phrase_table: bool,
     pub gpu: bool,
     pub require_gpu: bool,
+    pub mt_force_cpu: bool,
     pub mt_model: Option<String>,
     pub mt_batch_size: Option<usize>,
     pub mt_max_batch_tokens: Option<usize>,
     pub mt_oom_retries: Option<usize>,
     pub mt_allow_cpu_fallback: bool,
+    pub mt_daemon: bool,
+    pub mt_enforce_quality_floor: bool,
     pub quality_profile: QualityProfile,
 }
 
+#[derive(Debug)]
+pub enum TranslatorError {
+    Initialization { source: String },
+    Translate { source: String },
+}
+
+pub type TranslatorResult<T> = Result<T, TranslatorError>;
+
+impl std::fmt::Display for TranslatorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Initialization { source } => {
+                write!(f, "failed to initialize translator: {source}")
+            }
+            Self::Translate { source } => write!(f, "translation failed: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for TranslatorError {}
+
 impl Translator {
-    pub fn new(config: TranslatorConfig) -> Result<Self, String> {
+    pub fn new(config: TranslatorConfig) -> TranslatorResult<Self> {
+        Self::new_inner(config).map_err(|source| TranslatorError::Initialization { source })
+    }
+
+    fn new_inner(config: TranslatorConfig) -> Result<Self, String> {
         let source_lang = config.source_lang;
         let target_lang = config.target_lang;
         let offline = config.offline;
         let force_phrase_table = config.force_phrase_table;
         let gpu = config.gpu;
         let require_gpu = config.require_gpu;
+        let mt_force_cpu = config.mt_force_cpu;
         let mt_model = config.mt_model;
         let mt_batch_size = config.mt_batch_size;
         let mt_max_batch_tokens = config.mt_max_batch_tokens;
         let mt_oom_retries = config.mt_oom_retries;
         let mt_allow_cpu_fallback = config.mt_allow_cpu_fallback;
+        let mt_daemon = config.mt_daemon;
+        let mt_enforce_quality_floor = config.mt_enforce_quality_floor;
         let quality_profile = config.quality_profile;
-        let script_path = resolve_translate_script_path();
+        let script_path = resolve_translate_script_path(mt_daemon);
         let can_use_neural =
             !force_phrase_table && script_path.as_deref().is_some_and(neural_mt_available);
 
         // Try neural backend first unless explicitly forced to phrase table.
         let (backend, neural_config) = if can_use_neural {
-            let script_path = script_path.expect("checked by can_use_neural");
-            let mt_device = resolve_mt_device(gpu, require_gpu)?;
+            let script_path = script_path.ok_or_else(|| {
+                "neural MT backend was selected but no MT backend script was resolved".to_string()
+            })?;
+            if mt_force_cpu && require_gpu {
+                return Err(
+                    "--mt-force-cpu is incompatible with --require-gpu (MT requires GPU)."
+                        .to_string(),
+                );
+            }
+            let mt_device = resolve_mt_device(gpu && !mt_force_cpu, require_gpu)?;
             let decode = decode_profile(quality_profile);
             let batch_size = mt_batch_size.unwrap_or(decode.batch_size);
             let max_batch_tokens = mt_max_batch_tokens.unwrap_or(decode.max_batch_tokens);
@@ -92,6 +132,7 @@ impl Translator {
                 repetition_penalty: decode.repetition_penalty,
                 no_repeat_ngram_size: decode.no_repeat_ngram_size,
                 prepend_prev_context: decode.prepend_prev_context,
+                use_daemon: mt_daemon,
             };
             eprintln!(
                 "translator: using neural MT (NLLB-200) [{}→{}] [device={}] [profile={}] [batch={}] [max_batch_tokens={}] [oom_retries={}] [cpu_fallback={}]",
@@ -118,7 +159,12 @@ impl Translator {
             }
             if !force_phrase_table && script_path.is_none() {
                 eprintln!(
-                    "warning: scripts/translate_batch.py not found; falling back to phrase-table translator."
+                    "warning: scripts/{} not found; falling back to phrase-table translator.",
+                    if mt_daemon {
+                        "mt_daemon.py"
+                    } else {
+                        "translate_batch.py"
+                    }
                 );
             }
             if !target_lang.eq_ignore_ascii_case("en") && offline {
@@ -136,6 +182,7 @@ impl Translator {
             target_lang: target_lang.to_lowercase(),
             offline,
             quality_profile,
+            enforce_quality_floor: mt_enforce_quality_floor,
             backend,
             neural_config,
         })
@@ -168,14 +215,30 @@ impl Translator {
     /// Translate all cues using the active backend.
     /// Neural mode: batched context-aware translation + post-processing.
     /// Phrase-table mode: per-cue string replacement.
-    pub fn translate_all(&self, cues: &[SubtitleCue]) -> Result<Vec<SubtitleCue>, String> {
+    pub fn translate_all(&self, cues: &[SubtitleCue]) -> TranslatorResult<Vec<SubtitleCue>> {
+        self.translate_all_with_extra_tags(cues, &[])
+    }
+
+    pub fn translate_all_with_extra_tags(
+        &self,
+        cues: &[SubtitleCue],
+        extra_tags: &[Vec<String>],
+    ) -> TranslatorResult<Vec<SubtitleCue>> {
+        self.translate_all_inner(cues, extra_tags)
+            .map_err(|source| TranslatorError::Translate { source })
+    }
+
+    fn translate_all_inner(
+        &self,
+        cues: &[SubtitleCue],
+        extra_tags: &[Vec<String>],
+    ) -> Result<Vec<SubtitleCue>, String> {
         match self.backend {
             TranslatorBackend::Neural => {
-                let config = self
-                    .neural_config
-                    .as_ref()
-                    .expect("neural config must exist when backend is Neural");
-                self.translate_neural_with_emergency_ladder(cues, config)
+                let config = self.neural_config.as_ref().ok_or_else(|| {
+                    "translator backend is Neural but neural config is missing".to_string()
+                })?;
+                self.translate_neural_with_emergency_ladder(cues, extra_tags, config)
             }
             TranslatorBackend::PhraseTable => {
                 let translated: Vec<SubtitleCue> = cues
@@ -197,16 +260,18 @@ impl Translator {
     fn translate_neural_with_emergency_ladder(
         &self,
         cues: &[SubtitleCue],
+        extra_tags: &[Vec<String>],
         base: &NeuralMTConfig,
     ) -> Result<Vec<SubtitleCue>, String> {
         let plans = build_neural_emergency_plans(base, self.quality_profile);
         let min_quality = semantic_floor(self.quality_profile);
         let mut last_error = String::new();
-        let cue_tags = if source_is_japanese(&self.source_lang) {
+        let mut cue_tags = if source_is_japanese(&self.source_lang) {
             build_adaptive_context_tags(cues, self.quality_profile)
         } else {
             Vec::new()
         };
+        cue_tags = merge_extra_tags(cue_tags, extra_tags);
 
         for (index, plan) in plans.iter().enumerate() {
             let stage = index + 1;
@@ -228,6 +293,7 @@ impl Translator {
             } {
                 Ok(translated) => translated,
                 Err(error) => {
+                    let error = error.to_string();
                     last_error = error.clone();
                     if is_mt_memory_error(&error) && stage < plans.len() {
                         eprintln!(
@@ -270,6 +336,13 @@ impl Translator {
                     );
                     continue;
                 }
+                if !self.enforce_quality_floor {
+                    eprintln!(
+                        "warning: ibvoid-doom-qlock mt_quality_floor_bypassed score={:.3} floor={:.3}",
+                        quality, min_quality
+                    );
+                    return Ok(translated);
+                }
                 return Err(format!(
                     "neural MT quality floor failure at final stage: score={quality:.3} floor={min_quality:.3}"
                 ));
@@ -291,6 +364,28 @@ impl Translator {
         }
         contains_japanese(text)
     }
+}
+
+fn merge_extra_tags(mut base: Vec<Vec<String>>, extra: &[Vec<String>]) -> Vec<Vec<String>> {
+    if extra.is_empty() {
+        return base;
+    }
+    if base.is_empty() {
+        return extra.to_vec();
+    }
+
+    let count = base.len().min(extra.len());
+    for idx in 0..count {
+        if extra[idx].is_empty() {
+            continue;
+        }
+        for tag in &extra[idx] {
+            if !base[idx].iter().any(|t| t == tag) {
+                base[idx].push(tag.clone());
+            }
+        }
+    }
+    base
 }
 
 fn semantic_floor(profile: QualityProfile) -> f64 {
@@ -528,10 +623,7 @@ fn split_scene_ranges(cues: &[SubtitleCue]) -> Vec<(usize, usize)> {
     let mut scene_end_exclusive = 0usize;
     let mut prev_end = 0.0f64;
     for (idx, cue) in cues.iter().enumerate() {
-        let (start, end) = match parse_srt_timing_line(&cue.timing) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
+        let Ok((start, end)) = parse_srt_timing_line(&cue.timing) else { continue };
         if scene_start.is_none() {
             scene_start = Some(idx);
         } else {
@@ -736,7 +828,7 @@ fn build_neural_emergency_plans(
     plans.push(tuned.clone());
 
     if base.allow_cpu_fallback_on_oom {
-        let mut cpu = tuned.clone();
+        let mut cpu = tuned;
         cpu.gpu = false;
         cpu.allow_cpu_fallback_on_oom = true;
         plans.push(cpu.clone());
@@ -942,7 +1034,7 @@ fn decode_profile(profile: QualityProfile) -> DecodeProfile {
     }
 }
 
-fn resolve_translate_script_path() -> Option<PathBuf> {
+fn resolve_translate_script_path(mt_daemon: bool) -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("SUB_ZERO_MT_SCRIPT") {
         let path = PathBuf::from(explicit.trim());
         if path.is_file() {
@@ -950,7 +1042,13 @@ fn resolve_translate_script_path() -> Option<PathBuf> {
         }
     }
 
-    let cwd_candidate = PathBuf::from("scripts").join("translate_batch.py");
+    let script_name = if mt_daemon {
+        "mt_daemon.py"
+    } else {
+        "translate_batch.py"
+    };
+
+    let cwd_candidate = PathBuf::from("scripts").join(script_name);
     if cwd_candidate.is_file() {
         return Some(cwd_candidate);
     }
@@ -959,14 +1057,11 @@ fn resolve_translate_script_path() -> Option<PathBuf> {
         .ok()
         .and_then(|p| p.parent().map(PathBuf::from));
     if let Some(exe_dir) = exe_dir {
-        let adjacent = exe_dir.join("scripts").join("translate_batch.py");
+        let adjacent = exe_dir.join("scripts").join(script_name);
         if adjacent.is_file() {
             return Some(adjacent);
         }
-        let parent_adjacent = exe_dir
-            .join("..")
-            .join("scripts")
-            .join("translate_batch.py");
+        let parent_adjacent = exe_dir.join("..").join("scripts").join(script_name);
         if parent_adjacent.is_file() {
             return Some(parent_adjacent);
         }
@@ -1084,11 +1179,14 @@ mod tests {
             force_phrase_table: true,
             gpu: false,
             require_gpu: false,
+            mt_force_cpu: false,
             mt_model: None,
             mt_batch_size: None,
             mt_max_batch_tokens: None,
             mt_oom_retries: None,
             mt_allow_cpu_fallback: true,
+            mt_daemon: false,
+            mt_enforce_quality_floor: true,
             quality_profile: QualityProfile::Balanced,
         })
         .expect("translator should build");
@@ -1104,11 +1202,14 @@ mod tests {
             force_phrase_table: true,
             gpu: false,
             require_gpu: false,
+            mt_force_cpu: false,
             mt_model: None,
             mt_batch_size: None,
             mt_max_batch_tokens: None,
             mt_oom_retries: None,
             mt_allow_cpu_fallback: true,
+            mt_daemon: false,
+            mt_enforce_quality_floor: true,
             quality_profile: QualityProfile::Balanced,
         })
         .expect("translator should build");
@@ -1127,11 +1228,14 @@ mod tests {
             force_phrase_table: true,
             gpu: false,
             require_gpu: false,
+            mt_force_cpu: false,
             mt_model: None,
             mt_batch_size: None,
             mt_max_batch_tokens: None,
             mt_oom_retries: None,
             mt_allow_cpu_fallback: true,
+            mt_daemon: false,
+            mt_enforce_quality_floor: true,
             quality_profile: QualityProfile::Balanced,
         })
         .expect("translator should build");

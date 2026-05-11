@@ -17,6 +17,10 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+# Common subtitle styling tags that pollute lexical metrics.
+HTML_TAG_RE = re.compile(r"<[^>]+>")
+BRACE_TAG_RE = re.compile(r"{\\[^}]+}")
+
 
 @dataclass
 class Cue:
@@ -24,6 +28,15 @@ class Cue:
     end: float
     timing: str
     text: str
+
+
+def clean_sub_text(text: str) -> str:
+    # Normalize basic formatting tags to avoid penalizing ASS->SRT conversions.
+    s = HTML_TAG_RE.sub("", text)
+    s = BRACE_TAG_RE.sub("", s)
+    s = s.replace("\\N", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
 def parse_timestamp(ts: str) -> float:
@@ -61,12 +74,15 @@ def parse_srt(path: Path) -> List[Cue]:
             start, end = parse_timing_range(lines[1].strip())
         except Exception:
             continue
+        text = clean_sub_text(
+            " ".join(line.strip() for line in lines[2:] if line.strip())
+        )
         cues.append(
             Cue(
                 start=start,
                 end=end,
                 timing=lines[1].strip(),
-                text=" ".join(line.strip() for line in lines[2:] if line.strip()),
+                text=text,
             )
         )
     return cues

@@ -42,7 +42,28 @@ pub struct DeepScanConfig {
     pub vad_pad: f64,
 }
 
-pub fn scan_input(input: &Path, config: DeepScanConfig) -> Result<ContentMap, String> {
+#[derive(Debug)]
+pub enum DeepScanError {
+    Scan { source: String },
+}
+
+pub type DeepScanResult<T> = Result<T, DeepScanError>;
+
+impl std::fmt::Display for DeepScanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Scan { source } => write!(f, "deep scan failed: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for DeepScanError {}
+
+pub fn scan_input(input: &Path, config: DeepScanConfig) -> DeepScanResult<ContentMap> {
+    scan_input_inner(input, config).map_err(|source| DeepScanError::Scan { source })
+}
+
+fn scan_input_inner(input: &Path, config: DeepScanConfig) -> Result<ContentMap, String> {
     if is_srt_path(input) {
         return scan_srt(input);
     }
@@ -50,7 +71,7 @@ pub fn scan_input(input: &Path, config: DeepScanConfig) -> Result<ContentMap, St
 }
 
 fn scan_srt(input: &Path) -> Result<ContentMap, String> {
-    let cues = parse_srt_file(input).map_err(|e| format!("{}: {e}", input.display()))?;
+    let cues = parse_srt_file(input).map_err(|error| error.to_string())?;
     let total_duration_secs = srt_total_duration_secs(&cues).unwrap_or(0.0);
     let estimated_cues = cues.len();
     let avg_cue_secs = if estimated_cues > 0 {

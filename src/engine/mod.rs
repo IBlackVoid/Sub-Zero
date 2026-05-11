@@ -1,7 +1,12 @@
+pub mod character_glossary;
 pub mod chunker;
 pub mod context;
 pub mod deep_scan;
 pub mod doom_qlock;
+pub mod events;
+pub mod http_sidecar;
+pub mod live_replanner;
+pub mod media;
 pub mod neural_mt;
 pub mod parallel;
 pub mod pipeline;
@@ -10,3 +15,5 @@ pub mod srt;
 pub mod stitcher;
 pub mod transcribe;
 pub mod translate;
+pub mod voice_consistency;
+pub mod ws_sidecar;

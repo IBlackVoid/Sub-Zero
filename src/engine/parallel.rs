@@ -4,9 +4,11 @@
 // Each worker produces a partial SRT which the stitcher later merges.
 
 use crate::engine::chunker::AudioChunk;
+use crate::engine::events::EventSink;
 use crate::engine::srt::{parse_srt, SubtitleCue};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -29,12 +31,56 @@ pub struct ChunkTranscription {
 
 use crate::engine::transcribe::{QualityProfile, TranscribeConfig, Transcriber};
 
+#[derive(Debug)]
+pub enum ParallelTranscribeError {
+    Setup { source: String },
+    Transcribe { source: String },
+}
+
+pub type ParallelTranscribeResult<T> = Result<T, ParallelTranscribeError>;
+
+impl std::fmt::Display for ParallelTranscribeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Setup { source } => {
+                write!(f, "failed to set up parallel transcription: {source}")
+            }
+            Self::Transcribe { source } => write!(f, "parallel transcription failed: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for ParallelTranscribeError {}
+
 /// Transcribe all chunks in parallel and return chunk-level transcriptions.
 pub fn parallel_transcribe(
     chunks: &[AudioChunk],
     config: &TranscribeConfig,
     max_workers: usize,
     checkpoint_path: Option<PathBuf>,
+    events: EventSink,
+) -> ParallelTranscribeResult<Vec<ChunkTranscription>> {
+    parallel_transcribe_inner(chunks, config, max_workers, checkpoint_path, events).map_err(
+        |source| {
+            if source.starts_with("failed to build thread pool:")
+                || source.starts_with("failed to write checkpoint")
+                || source.starts_with("failed to create")
+                || source.starts_with("failed to serialize")
+            {
+                ParallelTranscribeError::Setup { source }
+            } else {
+                ParallelTranscribeError::Transcribe { source }
+            }
+        },
+    )
+}
+
+fn parallel_transcribe_inner(
+    chunks: &[AudioChunk],
+    config: &TranscribeConfig,
+    max_workers: usize,
+    checkpoint_path: Option<PathBuf>,
+    events: EventSink,
 ) -> Result<Vec<ChunkTranscription>, String> {
     let monitor = if let Some(path) = checkpoint_path {
         Some(Arc::new(ChunkRunMonitor::new(path, chunks, config)?))
@@ -47,23 +93,31 @@ pub fn parallel_transcribe(
         .build()
         .map_err(|e| format!("failed to build thread pool: {e}"))?;
 
-    let monitor_for_workers = monitor.clone();
+    let monitor_for_workers = monitor;
+    let events_for_workers = events;
     let results: Vec<Result<ChunkTranscription, String>> = pool.install(|| {
         chunks
             .par_iter()
             .map_init(
                 || {
                     (
-                        Transcriber::new(config.clone()).and_then(|opt| {
-                            opt.ok_or_else(|| "transcriber disabled explicitly".to_string())
-                        }),
+                        Transcriber::new(config.clone())
+                            .map_err(|error| error.to_string())
+                            .and_then(|opt| {
+                                opt.ok_or_else(|| "transcriber disabled explicitly".to_string())
+                            }),
                         monitor_for_workers.clone(),
                     )
                 },
                 |state, chunk| match &state.0 {
-                    Ok(transcriber) => {
-                        transcribe_single_chunk(chunk, transcriber, config, state.1.as_deref())
-                    }
+                    Ok(transcriber) => transcribe_single_chunk(
+                        chunk,
+                        transcriber,
+                        config,
+                        state.1.as_deref(),
+                        &events_for_workers,
+                        chunks.len(),
+                    ),
                     Err(error) => Err(format!("failed to initialize worker transcriber: {error}")),
                 },
             )
@@ -85,6 +139,8 @@ fn transcribe_single_chunk(
     transcriber: &Transcriber,
     config: &TranscribeConfig,
     monitor: Option<&ChunkRunMonitor>,
+    events: &EventSink,
+    chunk_total: usize,
 ) -> Result<ChunkTranscription, String> {
     let policy = monitor.map(|m| m.policy_snapshot()).unwrap_or_default();
     let srt_path = chunk.wav_path.with_extension("srt");
@@ -92,7 +148,10 @@ fn transcribe_single_chunk(
     let mut last_issue = String::from("unknown quality gate failure");
     let predicted_secs = estimate_chunk_predicted_secs(chunk, config);
     let profile_timeout_floor = match config.quality_profile {
-        QualityProfile::Fast => 120.0,
+        // Fast profile is still allowed to run long chunks. 120s is often too tight on Windows
+        // for python-whisper (word timing / DTW fallback can spike tail latency), which leads to
+        // empty-chunk fallbacks and cascades into MT quality failures.
+        QualityProfile::Fast => 180.0,
         QualityProfile::Balanced => 180.0,
         QualityProfile::Strict => 300.0,
     };
@@ -101,6 +160,18 @@ fn transcribe_single_chunk(
         .max(profile_timeout_floor);
 
     for attempt in 0..max_attempts {
+        if attempt == 0 && events.enabled() {
+            events.emit(&json!({
+                "event": "chunk_start",
+                "chunk_index": chunk.index,
+                "chunk_total": chunk_total,
+                "start_sec": chunk.start_sec,
+                "end_sec": chunk.end_sec,
+                "wav_path": chunk.wav_path.display().to_string(),
+                "quality_profile": config.quality_profile.as_str(),
+                "predicted_secs": predicted_secs,
+            }));
+        }
         let mut from_cache = false;
         let chunk_start = Instant::now();
         let is_strict_pass = policy.strict_first_pass || attempt > 0;
@@ -121,7 +192,8 @@ fn transcribe_single_chunk(
                             ))
                         } else if is_strict_pass {
                             let retry_config = strict_retry_config(config, attempt.max(1));
-                            let retry_transcriber = Transcriber::new(retry_config)?
+                            let retry_transcriber = Transcriber::new(retry_config)
+                                .map_err(|error| error.to_string())?
                                 .ok_or_else(|| "transcriber disabled explicitly".to_string())?;
                             transcribe_chunk_once(chunk, &retry_transcriber, timeout_secs)
                         } else {
@@ -133,7 +205,8 @@ fn transcribe_single_chunk(
             }
         } else if is_strict_pass {
             let retry_config = strict_retry_config(config, attempt.max(1));
-            let retry_transcriber = Transcriber::new(retry_config)?
+            let retry_transcriber = Transcriber::new(retry_config)
+                .map_err(|error| error.to_string())?
                 .ok_or_else(|| "transcriber disabled explicitly".to_string())?;
             transcribe_chunk_once(chunk, &retry_transcriber, timeout_secs)
         } else {
@@ -178,6 +251,18 @@ fn transcribe_single_chunk(
                     from_cache,
                 );
             }
+            if events.enabled() {
+                events.emit(&json!({
+                    "event": "chunk_complete",
+                    "chunk_index": chunk.index,
+                    "chunk_total": chunk_total,
+                    "attempt": attempt + 1,
+                    "from_cache": from_cache,
+                    "elapsed_secs": actual_secs,
+                    "health_score": health.score(config.quality_profile),
+                    "cue_count": cues.len(),
+                }));
+            }
             return Ok(ChunkTranscription {
                 chunk_index: chunk.index,
                 offset_secs: chunk.start_sec,
@@ -217,6 +302,15 @@ fn transcribe_single_chunk(
             chunk.index,
             config.quality_profile.as_str()
         );
+        if events.enabled() {
+            events.emit(&json!({
+                "event": "chunk_timeout",
+                "chunk_index": chunk.index,
+                "chunk_total": chunk_total,
+                "attempts": max_attempts,
+                "predicted_secs": predicted_secs,
+            }));
+        }
         return Ok(ChunkTranscription {
             chunk_index: chunk.index,
             offset_secs: chunk.start_sec,
@@ -567,10 +661,7 @@ impl ChunkRunMonitor {
         attempts: usize,
         from_cache: bool,
     ) {
-        let mut state = match self.state.lock() {
-            Ok(lock) => lock,
-            Err(_) => return,
-        };
+        let Ok(mut state) = self.state.lock() else { return };
 
         state
             .completed
@@ -645,10 +736,7 @@ impl ChunkRunMonitor {
     }
 
     fn record_failure(&self, chunk_index: usize, predicted_secs: f64, reason: &str) {
-        let mut state = match self.state.lock() {
-            Ok(lock) => lock,
-            Err(_) => return,
-        };
+        let Ok(mut state) = self.state.lock() else { return };
         state
             .failed
             .retain(|entry| entry.chunk_index != chunk_index);
@@ -672,10 +760,7 @@ impl ChunkRunMonitor {
     }
 
     fn adapt_policy(&self, slow: bool, low_quality: bool, timeout: bool) {
-        let mut policy = match self.policy.lock() {
-            Ok(lock) => lock,
-            Err(_) => return,
-        };
+        let Ok(mut policy) = self.policy.lock() else { return };
 
         if slow {
             policy.timeout_scale = (policy.timeout_scale * 1.20).clamp(1.0, 3.0);
@@ -775,6 +860,8 @@ mod tests {
             source_lang: "ja".to_string(),
             target_lang: "ja".to_string(),
             whisper_args: vec![],
+            audio_lang: None,
+            audio_stream_index: None,
             vad: true,
             vad_threshold_db: -35.0,
             vad_min_silence: 0.35,
@@ -821,6 +908,8 @@ mod tests {
             source_lang: "ja".to_string(),
             target_lang: "ja".to_string(),
             whisper_args: vec![],
+            audio_lang: None,
+            audio_stream_index: None,
             vad: true,
             vad_threshold_db: -35.0,
             vad_min_silence: 0.35,

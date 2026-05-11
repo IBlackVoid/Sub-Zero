@@ -9,8 +9,9 @@ use crate::engine::context::{
 };
 use crate::engine::srt::SubtitleCue;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -48,6 +49,8 @@ pub struct NeuralMTConfig {
     pub no_repeat_ngram_size: usize,
     /// Whether to prepend previous cue text as a context hint.
     pub prepend_prev_context: bool,
+    /// Reuse a persistent Python subprocess for MT across batches/inputs.
+    pub use_daemon: bool,
 }
 
 impl Default for NeuralMTConfig {
@@ -67,10 +70,39 @@ impl Default for NeuralMTConfig {
             beam_size: 4,
             repetition_penalty: 1.1,
             no_repeat_ngram_size: 3,
-            prepend_prev_context: false,
+            // F.2 §6.2 / win-condition W1 (discourse coherence):
+            // prepend the prior cues' source text into NLLB's input
+            // so anaphora and named-entity coreference resolve across
+            // cue boundaries. The Python side (translate_batch.py)
+            // strips the corresponding leading segments from the
+            // decoded output. Default ON since this strictly improves
+            // the Lagrangian objective from F.2 (E5).
+            prepend_prev_context: true,
+            use_daemon: false,
         }
     }
 }
+
+#[derive(Debug)]
+pub enum NeuralMtError {
+    CudaProbe { source: String },
+    Translate { source: String },
+}
+
+pub type NeuralMtResult<T> = Result<T, NeuralMtError>;
+
+impl std::fmt::Display for NeuralMtError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CudaProbe { source } => {
+                write!(f, "failed to probe neural MT CUDA devices: {source}")
+            }
+            Self::Translate { source } => write!(f, "neural MT failed: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for NeuralMtError {}
 
 /// Input record sent to the Python script.
 #[derive(Debug, Serialize)]
@@ -109,7 +141,11 @@ pub fn neural_mt_available(script_path: &Path) -> bool {
 }
 
 /// Probe how many CUDA devices CTranslate2 can use from the active Python env.
-pub fn neural_mt_cuda_device_count() -> Result<usize, String> {
+pub fn neural_mt_cuda_device_count() -> NeuralMtResult<usize> {
+    neural_mt_cuda_device_count_inner().map_err(|source| NeuralMtError::CudaProbe { source })
+}
+
+fn neural_mt_cuda_device_count_inner() -> Result<usize, String> {
     let python = find_python().ok_or_else(|| "python not found for neural MT".to_string())?;
     let output = Command::new(&python)
         .arg("-c")
@@ -149,6 +185,13 @@ except Exception as e:
 pub fn translate_batch(
     cues: &[ContextualCue],
     config: &NeuralMTConfig,
+) -> NeuralMtResult<Vec<String>> {
+    translate_batch_inner(cues, config).map_err(|source| NeuralMtError::Translate { source })
+}
+
+fn translate_batch_inner(
+    cues: &[ContextualCue],
+    config: &NeuralMTConfig,
 ) -> Result<Vec<String>, String> {
     let python = find_python().ok_or_else(|| "python not found for neural MT".to_string())?;
 
@@ -157,6 +200,10 @@ pub fn translate_batch(
             "translation script not found: {}",
             config.script_path.display()
         ));
+    }
+
+    if config.use_daemon {
+        return translate_batch_via_daemon(&python, cues, config);
     }
 
     // Build requests.
@@ -269,6 +316,183 @@ pub fn translate_batch(
     Ok(translations)
 }
 
+thread_local! {
+    static MT_DAEMON: RefCell<Option<MtDaemon>> = const { RefCell::new(None) };
+}
+
+#[derive(Debug)]
+struct MtDaemon {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MtDaemonResponse {
+    ok: bool,
+    error: Option<String>,
+    responses: Option<Vec<MTResponse>>,
+}
+
+impl MtDaemon {
+    fn spawn(python: &str, script_path: &Path) -> Result<Self, String> {
+        let mut cmd = Command::new(python);
+        cmd.arg("-u")
+            .arg(script_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to spawn MT daemon: {e}"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "MT daemon stdin pipe unavailable".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "MT daemon stdout pipe unavailable".to_string())?;
+
+        Ok(Self {
+            child,
+            stdin,
+            stdout: std::io::BufReader::new(stdout),
+        })
+    }
+
+    fn translate(
+        &mut self,
+        config: &NeuralMTConfig,
+        requests: &[MTRequest],
+    ) -> Result<Vec<MTResponse>, String> {
+        let payload = serde_json::json!({
+            "cmd": "translate",
+            "config": {
+                "model": config.model_name,
+                "model_dir": config.model_dir.as_ref().map(|p| p.display().to_string()),
+                "source_lang": config.source_lang,
+                "target_lang": config.target_lang,
+                "device": if config.gpu { "cuda" } else { "cpu" },
+                "batch_size": config.batch_size,
+                "max_batch_tokens": config.max_batch_tokens,
+                "beam_size": config.beam_size,
+                "repetition_penalty": config.repetition_penalty,
+                "no_repeat_ngram_size": config.no_repeat_ngram_size,
+                "oom_retries": config.oom_retries,
+                "allow_cpu_fallback": config.allow_cpu_fallback_on_oom,
+                "prepend_prev_context": config.prepend_prev_context,
+            },
+            "requests": requests,
+        });
+
+        let encoded = serde_json::to_vec(&payload)
+            .map_err(|e| format!("failed to serialize MT daemon request: {e}"))?;
+        write_frame(&mut self.stdin, &encoded)
+            .map_err(|e| format!("failed to write MT daemon request: {e}"))?;
+
+        let response_bytes = read_frame(&mut self.stdout)
+            .map_err(|e| format!("failed to read MT daemon response: {e}"))?;
+        let response: MtDaemonResponse = serde_json::from_slice(&response_bytes)
+            .map_err(|e| format!("failed to parse MT daemon response: {e}"))?;
+        if !response.ok {
+            return Err(response
+                .error
+                .unwrap_or_else(|| "MT daemon reported failure without error text".to_string()));
+        }
+
+        response
+            .responses
+            .ok_or_else(|| "MT daemon returned ok=true but missing responses".to_string())
+    }
+}
+
+impl Drop for MtDaemon {
+    fn drop(&mut self) {
+        if let Ok(encoded) = serde_json::to_vec(&serde_json::json!({ "cmd": "shutdown" })) {
+            let _ = write_frame(&mut self.stdin, &encoded);
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> Result<(), std::io::Error> {
+    let len: u32 = payload
+        .len()
+        .try_into()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "frame too large"))?;
+    writer.write_all(&len.to_le_bytes())?;
+    writer.write_all(payload)?;
+    writer.flush()
+}
+
+fn read_frame<R: Read>(reader: &mut R) -> Result<Vec<u8>, std::io::Error> {
+    let mut len_bytes = [0u8; 4];
+    reader.read_exact(&mut len_bytes)?;
+    let len = u32::from_le_bytes(len_bytes) as usize;
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf)?;
+    Ok(buf)
+}
+
+fn translate_batch_via_daemon(
+    python: &str,
+    cues: &[ContextualCue],
+    config: &NeuralMTConfig,
+) -> Result<Vec<String>, String> {
+    // Build requests.
+    let requests: Vec<MTRequest> = cues
+        .iter()
+        .map(|c| MTRequest {
+            index: c.index,
+            text: c.current_line.clone(),
+            prev_context: c.prev_lines.clone(),
+            next_context: c.next_lines.clone(),
+            context_tags: c.context_tags.clone(),
+        })
+        .collect();
+
+    let mut responses = MT_DAEMON.with(|cell| -> Result<Vec<MTResponse>, String> {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(MtDaemon::spawn(python, &config.script_path)?);
+        }
+        let Some(daemon) = slot.as_mut() else {
+            return Err("MT daemon missing after spawn".to_string());
+        };
+
+        match daemon.translate(config, &requests) {
+            Ok(responses) => Ok(responses),
+            Err(error) => {
+                // One restart attempt for robustness if the daemon crashed or got wedged.
+                *slot = None;
+                *slot = Some(MtDaemon::spawn(python, &config.script_path)?);
+                slot.as_mut()
+                    .ok_or_else(|| "MT daemon missing after restart".to_string())?
+                    .translate(config, &requests)
+                    .map_err(|e| format!("MT daemon retry failed: {e} (original={error})"))
+            }
+        }
+    })?;
+
+    // Map responses back by index in O(n).
+    let index_to_pos: HashMap<usize, usize> = cues
+        .iter()
+        .enumerate()
+        .map(|(pos, cue)| (cue.index, pos))
+        .collect();
+    let mut translations = vec![String::new(); cues.len()];
+    for resp in responses.drain(..) {
+        if let Some(pos) = index_to_pos.get(&resp.index).copied() {
+            translations[pos] = resp.translation;
+        }
+    }
+
+    Ok(translations)
+}
+
 pub(crate) fn is_cuda_oom_message(message: &str) -> bool {
     let lowered = message.to_ascii_lowercase();
     lowered.contains("cuda") && lowered.contains("out of memory")
@@ -279,9 +503,10 @@ pub(crate) fn is_cuda_oom_message(message: &str) -> bool {
 pub fn translate_cues_neural(
     cues: &[SubtitleCue],
     config: &NeuralMTConfig,
-) -> Result<Vec<SubtitleCue>, String> {
+) -> NeuralMtResult<Vec<SubtitleCue>> {
     let context_windows = build_context_windows(cues, config.context_radius);
     translate_cues_neural_from_windows(cues, &context_windows, config)
+        .map_err(|source| NeuralMtError::Translate { source })
 }
 
 /// Same as `translate_cues_neural`, but with optional per-cue tags to inform
@@ -290,9 +515,10 @@ pub fn translate_cues_neural_with_tags(
     cues: &[SubtitleCue],
     cue_tags: &[Vec<String>],
     config: &NeuralMTConfig,
-) -> Result<Vec<SubtitleCue>, String> {
+) -> NeuralMtResult<Vec<SubtitleCue>> {
     let context_windows = build_context_windows_with_tags(cues, config.context_radius, cue_tags);
     translate_cues_neural_from_windows(cues, &context_windows, config)
+        .map_err(|source| NeuralMtError::Translate { source })
 }
 
 fn translate_cues_neural_from_windows(
@@ -303,7 +529,8 @@ fn translate_cues_neural_from_windows(
     // Run a single subprocess for the full cue set. The Python backend still
     // respects `--batch-size` internally for model inference, but this avoids
     // repeated model load/unload overhead per Rust-side batch.
-    let translated_texts = translate_batch(context_windows, config)?;
+    let translated_texts =
+        translate_batch(context_windows, config).map_err(|error| error.to_string())?;
     if translated_texts.len() != cues.len() {
         return Err(format!(
             "neural MT returned mismatched item count: expected {}, got {}",

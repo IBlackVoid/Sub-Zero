@@ -9,12 +9,33 @@
 use crate::engine::parallel::ChunkTranscription;
 use crate::engine::srt::SubtitleCue;
 
+#[derive(Debug)]
+pub enum StitcherError {
+    Stitch { source: String },
+}
+
+pub type StitcherResult<T> = Result<T, StitcherError>;
+
+impl std::fmt::Display for StitcherError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stitch { source } => write!(f, "failed to stitch chunk subtitles: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for StitcherError {}
+
 /// Similarity threshold (0.0–1.0) for considering two cues as duplicates.
 const DEDUP_SIMILARITY_THRESHOLD: f64 = 0.6;
 
 /// Merge chunk transcriptions into a single cue sequence with correct global
 /// timestamps and no duplicates at chunk boundaries.
-pub fn stitch_chunks(chunks: &[ChunkTranscription]) -> Result<Vec<SubtitleCue>, String> {
+pub fn stitch_chunks(chunks: &[ChunkTranscription]) -> StitcherResult<Vec<SubtitleCue>> {
+    stitch_chunks_inner(chunks).map_err(|source| StitcherError::Stitch { source })
+}
+
+fn stitch_chunks_inner(chunks: &[ChunkTranscription]) -> Result<Vec<SubtitleCue>, String> {
     if chunks.is_empty() {
         return Ok(Vec::new());
     }
@@ -87,7 +108,10 @@ fn deduplicate_overlaps(cues: &[TimedCue]) -> Vec<TimedCue> {
     result.push(cues[0].clone());
 
     for cue in cues.iter().skip(1) {
-        let last = result.last().unwrap();
+        let Some(last) = result.last() else {
+            result.push(cue.clone());
+            continue;
+        };
         // If cues come from different chunks and are very close in time with
         // similar text, they're overlap duplicates.
         if last.chunk_index != cue.chunk_index {
@@ -173,6 +197,25 @@ fn reindex(cues: &[SubtitleCue]) -> Vec<SubtitleCue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_reindexed_and_monotonic(cues: &[SubtitleCue]) {
+        let mut last_start = None::<f64>;
+        let mut last_end = None::<f64>;
+
+        for (index, cue) in cues.iter().enumerate() {
+            assert_eq!(cue.index, index + 1);
+            let (start, end) = parse_timing_pair(&cue.timing).expect("timing should parse");
+            assert!(end >= start);
+            if let Some(previous_start) = last_start {
+                assert!(start >= previous_start);
+            }
+            if let Some(previous_end) = last_end {
+                assert!(end >= previous_end);
+            }
+            last_start = Some(start);
+            last_end = Some(end);
+        }
+    }
 
     #[test]
     fn format_ts_roundtrip() {
@@ -265,5 +308,94 @@ mod tests {
         assert_eq!(result.len(), 2);
         // Second chunk's cue at 5s + 300s offset = 305s = 00:05:05,000
         assert!(result[1].timing.starts_with("00:05:05"));
+    }
+
+    #[test]
+    fn generated_chunks_stitch_into_monotonic_reindexed_timeline() {
+        for chunk_count in 2..=4usize {
+            for cues_per_chunk in 1..=3usize {
+                let chunks = (0..chunk_count)
+                    .map(|chunk_index| {
+                        let cues = (0..cues_per_chunk)
+                            .map(|cue_index| SubtitleCue {
+                                index: cue_index + 9,
+                                timing: format!(
+                                    "00:00:{:02},000 --> 00:00:{:02},900",
+                                    cue_index * 3,
+                                    cue_index * 3 + 1
+                                ),
+                                text: format!("chunk-{chunk_index}-cue-{cue_index}"),
+                            })
+                            .collect::<Vec<_>>();
+                        ChunkTranscription {
+                            chunk_index,
+                            offset_secs: chunk_index as f64 * 120.0,
+                            overlap_before: 0.0,
+                            overlap_after: 0.0,
+                            cues,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                let stitched = stitch_chunks(&chunks).expect("stitch should succeed");
+                assert_eq!(stitched.len(), chunk_count * cues_per_chunk);
+                assert_reindexed_and_monotonic(&stitched);
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_duplicate_boundaries_do_not_expand_output() {
+        for offset_secs in [58.0, 58.5, 59.0] {
+            let chunks = vec![
+                ChunkTranscription {
+                    chunk_index: 0,
+                    offset_secs: 0.0,
+                    overlap_before: 0.0,
+                    overlap_after: 2.0,
+                    cues: vec![
+                        SubtitleCue {
+                            index: 5,
+                            timing: "00:00:58,000 --> 00:01:00,000".to_string(),
+                            text: "Boundary line".to_string(),
+                        },
+                        SubtitleCue {
+                            index: 6,
+                            timing: "00:01:02,000 --> 00:01:03,000".to_string(),
+                            text: "Chunk zero tail".to_string(),
+                        },
+                    ],
+                },
+                ChunkTranscription {
+                    chunk_index: 1,
+                    offset_secs,
+                    overlap_before: 2.0,
+                    overlap_after: 0.0,
+                    cues: vec![
+                        SubtitleCue {
+                            index: 7,
+                            timing: "00:00:00,100 --> 00:00:02,100".to_string(),
+                            text: "Boundary line".to_string(),
+                        },
+                        SubtitleCue {
+                            index: 8,
+                            timing: "00:00:04,000 --> 00:00:05,000".to_string(),
+                            text: "Chunk one body".to_string(),
+                        },
+                    ],
+                },
+            ];
+
+            let stitched = stitch_chunks(&chunks).expect("stitch should succeed");
+            assert!(stitched.len() <= 4);
+            assert_reindexed_and_monotonic(&stitched);
+            assert_eq!(
+                stitched
+                    .iter()
+                    .filter(|cue| cue.text == "Boundary line")
+                    .count(),
+                1
+            );
+        }
     }
 }

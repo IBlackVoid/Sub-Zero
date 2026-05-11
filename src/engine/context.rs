@@ -64,7 +64,7 @@ pub fn build_context_windows_with_tags(
 }
 
 /// Format a contextual cue into a structured prompt string for the MT model.
-/// The model sees surrounding lines as context and translates the [CUR] line.
+/// The model sees surrounding lines as context and translates the `[CUR]` line.
 #[allow(dead_code)]
 pub fn format_mt_prompt(cue: &ContextualCue) -> String {
     let mut prompt = String::new();

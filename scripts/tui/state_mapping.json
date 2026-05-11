@@ -1,0 +1,17 @@
+{
+  "_comment": "Maps animation source files (by stem) to TUI state slots. Keep stems in sync with files in TUI/clips/ or Pixel-Ripper_V16/inputs/. Each state must point to exactly one source. To rename a GIF, change the stem here, not the file.",
+  "states": {
+    "idle":     { "source": "haruhi-haruhi-suzumiya",      "brightness": 1.0,  "contrast": 1.0,  "saturation": 1.0  },
+    "running":  { "source": "anime-haruhi",                "brightness": 1.05, "contrast": 1.15, "saturation": 1.2  },
+    "victory":  { "source": "yes-sir-yes",                 "brightness": 1.2,  "contrast": 1.1,  "saturation": 1.6  },
+    "warning":  { "source": "anime-anime-girls",           "brightness": 0.95, "contrast": 1.25, "saturation": 0.7  },
+    "error":    { "source": "anime-haruhi",                "brightness": 0.55, "contrast": 1.4,  "saturation": 0.35 },
+    "complete": { "source": "haruhi-suzumiya-yuki-nagato", "brightness": 1.15, "contrast": 1.05, "saturation": 1.5  }
+  },
+  "search_dirs": [
+    "TUI/clips",
+    "Pixel-Ripper_V16/inputs"
+  ],
+  "extensions": [".gif", ".mp4", ".mkv", ".png", ".jpg", ".jpeg"],
+  "output_width": 44
+}

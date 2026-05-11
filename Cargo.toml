@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "tui"]
+resolver = "2"
+
 [package]
 name = "sub-zero"
 version = "0.1.0"

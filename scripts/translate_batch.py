@@ -119,28 +119,41 @@ def main():
     target_prefix = [args.target_lang]
 
     # Prepare texts — include context for better translation quality.
+    #
+    # When `--prepend-prev-context` is set we implement F.2 §6.2
+    # (term E4 / win-condition W1): concatenate up to N preceding source-
+    # language cues with newline separators, then translate the whole
+    # thing in one shot. NLLB sees the discourse window and resolves
+    # zero-anaphora / referent ambiguity using it. After decoding we
+    # split the translation by `\n` and keep only the last segment as
+    # the cue's actual translation.
+    #
+    # `prefix_segments[i]` records how many preceding segments were
+    # prepended to request `i` so the response handler knows how many
+    # output lines to drop.
     texts_to_translate = []
+    prefix_segments = []
     for req in requests:
-        # Build contextual input: just send the main text for NLLB
-        # (context-window concatenation is experimental, we send the primary
-        # text and rely on the batch ordering for implicit context.)
         text = req.get("text", "").strip()
         if not text:
             text = " "
 
-        # For NLLB, we can prepend a brief context hint without confusing the
-        # model too much — just the previous line as a gentle signal.
         prev = req.get("prev_context", [])
+        n_prefix = 0
         if args.prepend_prev_context and prev:
-            # Use the last previous line as a context hint (separated by newline).
-            context_hint = prev[-1].strip()
-            if context_hint:
-                text = context_hint + " " + text
+            ctx_lines = [p.strip() for p in prev if p.strip()]
+            if ctx_lines:
+                # Concatenate the full discourse window. NLLB-200 handles
+                # multi-sentence input; the newline becomes a soft segment
+                # boundary the model preserves in the output.
+                text = "\n".join(ctx_lines + [text])
+                n_prefix = len(ctx_lines)
 
         # Scrub invalid characters/surrogates that crash sentencepiece's PyBind11 C++ parser
         text = text.encode('utf-8', 'replace').decode('utf-8')
 
         texts_to_translate.append(text)
+        prefix_segments.append(n_prefix)
 
     # Tokenize.
     tokenized = [
@@ -180,14 +193,30 @@ def main():
         else:
             raise
 
-    # Detokenize and build response.
+    # Detokenize and build response. When the request had a discourse
+    # context prefix attached, drop the corresponding number of leading
+    # segments from NLLB's output and keep only the current cue's
+    # translation. Falls back to the full output if NLLB collapsed the
+    # newlines (which happens occasionally for very short cues).
     responses = []
-    for req, result in zip(requests, results):
+    for req, result, n_prefix in zip(requests, results, prefix_segments):
         tokens = result.hypotheses[0]
         # Remove the target language token if present.
         if tokens and tokens[0] == args.target_lang:
             tokens = tokens[1:]
         translation = sp.Decode(tokens)
+        if n_prefix > 0:
+            segments = translation.split("\n")
+            if len(segments) > n_prefix:
+                translation = segments[-1].strip()
+            else:
+                # NLLB collapsed segments — keep last sentence-ish chunk
+                # by splitting on punctuation as a soft fallback.
+                # Better than emitting the full prefixed translation.
+                import re as _re
+                parts = _re.split(r"(?<=[.!?])\s+", translation)
+                if len(parts) >= 2:
+                    translation = parts[-1].strip()
         responses.append({
             "index": req["index"],
             "translation": translation,
@@ -519,6 +548,7 @@ def _is_hard_context(tags):
         "cue_exclaim",
         "overlap_risk",
         "rapid_dialogue",
+        "register_formal",
     }
     return not lowered.isdisjoint(hard_markers)
 
