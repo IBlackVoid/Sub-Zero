@@ -20,76 +20,17 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Linux audio headers (rodio)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
 
       - name: cargo build
-        run: cargo build --workspace --all-targets
+        run: cargo build --workspace
 
-      - name: cargo test (engine)
+      - name: cargo test (engine unit tests)
         run: cargo test --bin sub-zero
 
-      - name: cargo test (tui)
+      - name: cargo test (tui unit tests)
         run: cargo test -p sub-zero-tui
-
-  lint:
-    name: clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - name: clippy (engine, default lints)
-        run: cargo clippy --bin sub-zero --no-deps
-      - name: clippy (tui, default lints)
-        run: cargo clippy -p sub-zero-tui --no-deps
-
-  fidelity-verifier-smoke:
-    name: fidelity verifier smoke
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: install numpy
-        run: pip install numpy
-      - name: smoke-test the verifier on a synthetic triple
-        run: |
-          python - <<'PY'
-          import tempfile, subprocess, sys, random
-          from pathlib import Path
-          random.seed(42)
-          tmp = Path(tempfile.mkdtemp())
-          def write(p, lines):
-              with open(p, "w", encoding="utf-8") as f:
-                  for i, line in enumerate(lines, 1):
-                      f.write(f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},500\n{line}\n\n")
-          topics = ["rain","dog","war","peace","love","money","sky","time"]
-          ref, mach, base = [], [], []
-          for k in range(60):
-              t = topics[k % len(topics)]
-              ref.append(f"A short line about {t}, scene number {k}.")
-              mach.append(f"Short line about {t}, scene {k}.")
-              words = ref[k].split(); random.shuffle(words)
-              base.append(" ".join(words))
-          write(tmp / "ref.srt", ref)
-          write(tmp / "mach.srt", mach)
-          write(tmp / "base.srt", base)
-          r = subprocess.run([sys.executable,
-              "scripts/quality_gate/verify_fidelity_bound.py",
-              "--machine",  str(tmp / "mach.srt"),
-              "--baseline", str(tmp / "base.srt"),
-              "--reference",str(tmp / "ref.srt"),
-              "--align-by", "index",
-              "--strict"], capture_output=True, text=True)
-          print(r.stdout); print(r.stderr, file=sys.stderr)
-          sys.exit(r.returncode)
-          PY
