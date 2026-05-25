@@ -825,6 +825,17 @@ fn run_whisper_cpp(
         cmd.arg("-tr");
     }
 
+    // Suppress non-speech hallucination: when whisper detects the segment is
+    // likely non-speech (music, silence, ambient noise), skip it instead of
+    // hallucinating repetitive text like "be-be-be-be" or "doodle-doodle".
+    if !whisper_args.iter().any(|a| a.contains("no-speech-thold")) {
+        cmd.arg("--no-speech-thold").arg("0.5");
+    }
+    // Entropy threshold: reject segments with very high entropy (random babble).
+    if !whisper_args.iter().any(|a| a.contains("entropy-thold")) {
+        cmd.arg("--entropy-thold").arg("2.4");
+    }
+
     // Default to max CPU parallelism unless caller overrides.
     if !has_thread_override(whisper_args) {
         if let Ok(threads) = std::thread::available_parallelism() {

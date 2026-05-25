@@ -681,6 +681,12 @@ impl SubtitlePipeline {
             }),
         );
 
+        // Final post-processing pass: catches whisper hallucinations (repetitive
+        // non-speech patterns), normalizes sound effect labels, ensures quality.
+        // Runs unconditionally — even for same-language transcription where the
+        // translator might short-circuit without calling its internal postprocess.
+        crate::engine::postprocess::postprocess(&mut translated);
+
         let write_output_started = std::time::Instant::now();
         write_srt_file(&output, &translated).map_err(|error| error.to_string())?;
         record_runtime_stage(

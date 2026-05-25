@@ -22,9 +22,190 @@ pub fn postprocess(cues: &mut [SubtitleCue]) {
     enforce_name_consistency(cues);
     normalize_contractions(cues);
     repair_grammar_artifacts(cues);
+    detect_and_label_non_speech(cues);
     cleanup_artifacts(cues);
     fix_capitalization(cues);
     compress_reading_rate(cues, DEFAULT_READING_RATE_CPS);
+}
+
+// ── Non-speech detection (whisper hallucination suppression) ─────────────────
+
+/// Detect whisper hallucination patterns and replace with appropriate
+/// non-speech event labels like [Music], [Applause], [Laughter].
+///
+/// Whisper hallucinates specific patterns on non-speech audio:
+/// - Repetitive syllables: "be-be-be-be-be", "doodle-doodle-doodle"
+/// - Music transcription: "♪", "la la la", "do do do"
+/// - Onomatopoeia chains: same word repeated 4+ times
+/// - Very short repeated tokens filling a long duration
+///
+/// This runs BEFORE cleanup_artifacts so the repetition collapser doesn't
+/// mangle the detection.
+fn detect_and_label_non_speech(cues: &mut [SubtitleCue]) {
+    for cue in cues.iter_mut() {
+        let text = cue.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+
+        // Check for known non-speech markers already present.
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("[music]")
+            || lower.contains("[applause]")
+            || lower.contains("[laughter]")
+        {
+            continue;
+        }
+
+        // Detect repetitive hallucination: if a single token (or hyphenated
+        // pattern) repeats 4+ times consecutively, it's almost certainly
+        // whisper trying to transcribe non-speech audio.
+        if is_repetitive_hallucination(text) {
+            // Classify what kind of non-speech it likely is.
+            cue.text = classify_non_speech_event(text).to_string();
+            continue;
+        }
+
+        // Detect music symbols.
+        if text.contains('♪') || text.contains('♫') {
+            cue.text = "[Music]".to_string();
+            continue;
+        }
+
+        // Detect asterisk-wrapped sound effects and normalize formatting.
+        // e.g. "*laughs*" → "[Laughter]", "*sniff*" → keep as-is (brief)
+        if let Some(label) = detect_sound_effect_label(text) {
+            cue.text = label;
+        }
+    }
+}
+
+/// Returns true if the text is a repetitive hallucination pattern.
+fn is_repetitive_hallucination(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+
+    // Catch merged-word hallucinations FIRST (before word-count gate):
+    // "DoodledoodleDoodledoodle" where whisper merges the repeated token
+    // without spaces. Check if a 3-8 char substring repeats 3+ times.
+    let lower = text.to_ascii_lowercase();
+    let lower_alpha: String = lower.chars().filter(|c| c.is_alphabetic()).collect();
+    if lower_alpha.len() >= 12 {
+        for pat_len in 3..=8 {
+            if pat_len > lower_alpha.len() / 3 {
+                break;
+            }
+            let pattern = &lower_alpha[..pat_len];
+            let repeat_count = lower_alpha.matches(pattern).count();
+            if repeat_count >= 4 && repeat_count * pat_len > lower_alpha.len() / 3 {
+                return true;
+            }
+        }
+    }
+
+    // Very short text (by word count AND character count) can't be hallucination.
+    if words.len() < 4 && text.len() < 30 {
+        return false;
+    }
+
+    // Check for hyphenated repetition: "be-be-be-be-be"
+    if text.contains('-') {
+        let parts: Vec<&str> = text.split('-').collect();
+        if parts.len() >= 4 {
+            let first = parts[0].trim().to_ascii_lowercase();
+            if !first.is_empty() {
+                let repeat_count = parts
+                    .iter()
+                    .filter(|p| p.trim().to_ascii_lowercase() == first)
+                    .count();
+                if repeat_count as f64 / parts.len() as f64 > 0.7 {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Check for word-level repetition: same word 4+ times in a row.
+    let mut max_consecutive = 1usize;
+    let mut current_run = 1usize;
+    for window in words.windows(2) {
+        let a = window[0].trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase();
+        let b = window[1].trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase();
+        if a == b && !a.is_empty() {
+            current_run += 1;
+            max_consecutive = max_consecutive.max(current_run);
+        } else {
+            current_run = 1;
+        }
+    }
+    if max_consecutive >= 4 {
+        return true;
+    }
+
+    // Check if the entire text is essentially one pattern repeated.
+    // "doodle-doodle-doodle-doodle-doodle..." pattern.
+    if words.len() >= 6 {
+        let unique_words: std::collections::HashSet<String> = words
+            .iter()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase())
+            .filter(|w| !w.is_empty())
+            .collect();
+        // If 80%+ of words are the same token, it's hallucination.
+        if unique_words.len() <= 2 && words.len() >= 6 {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Classify what kind of non-speech event the hallucination represents.
+fn classify_non_speech_event(text: &str) -> &'static str {
+    let lower = text.to_ascii_lowercase();
+
+    // Music-like patterns.
+    if lower.contains("la ")
+        || lower.contains("da ")
+        || lower.contains("do ")
+        || lower.contains("doo")
+        || lower.contains("dum")
+        || lower.contains("hum")
+        || lower.contains("na ")
+    {
+        return "[Music]";
+    }
+
+    // Applause-like.
+    if lower.contains("clap") || lower.contains("applau") {
+        return "[Applause]";
+    }
+
+    // Default: [Music] is the most common non-speech hallucination source.
+    "[Music]"
+}
+
+/// Detect asterisk-wrapped sound effects and return a normalized label.
+fn detect_sound_effect_label(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    // Only process lines that are entirely a sound effect.
+    if !trimmed.starts_with('*') || !trimmed.ends_with('*') {
+        return None;
+    }
+    let inner = trimmed.trim_matches('*').trim().to_ascii_lowercase();
+
+    // Map common sound effects to standard labels.
+    let label = match inner.as_str() {
+        "laughs" | "laughter" | "laughing" => "[Laughter]",
+        "applause" | "clapping" => "[Applause]",
+        "music" | "singing" | "hums" | "humming" => "[Music]",
+        "silence" | "quiet" => return Some(String::new()), // Remove silence markers
+        "gasps" | "gasp" => "[Gasps]",
+        "sighs" | "sigh" => "[Sighs]",
+        "sniffs" | "sniff" => "[Sniffs]",
+        "coughs" | "cough" => "[Coughs]",
+        "screams" | "scream" | "screaming" => "[Screaming]",
+        _ => return None, // Keep other effects as-is
+    };
+    Some(label.to_string())
 }
 
 // ── Reading-rate compressor (F.2 term E2) ────────────────────────────────────
