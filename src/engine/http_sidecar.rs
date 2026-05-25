@@ -1,11 +1,12 @@
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct HttpSidecarConfig {
     pub bind_addr: String,
+    pub allow_remote: bool,
 }
 
 #[derive(Debug)]
@@ -16,6 +17,7 @@ pub struct HttpSidecarHandle {
 }
 
 pub fn start_http_sidecar(config: HttpSidecarConfig) -> Result<HttpSidecarHandle, String> {
+    validate_bind_addr(&config.bind_addr, config.allow_remote)?;
     let listener = TcpListener::bind(&config.bind_addr)
         .map_err(|e| format!("http sidecar bind {}: {e}", config.bind_addr))?;
     #[cfg(test)]
@@ -146,9 +148,30 @@ fn write_sse_headers(stream: &mut TcpStream) -> std::io::Result<()> {
     stream.write_all(b"Content-Type: text/event-stream\r\n")?;
     stream.write_all(b"Cache-Control: no-cache\r\n")?;
     stream.write_all(b"Connection: keep-alive\r\n")?;
-    stream.write_all(b"Access-Control-Allow-Origin: *\r\n")?;
     stream.write_all(b"\r\n")?;
     stream.flush()
+}
+
+fn validate_bind_addr(bind_addr: &str, allow_remote: bool) -> Result<(), String> {
+    if allow_remote {
+        return Ok(());
+    }
+    let addrs = bind_addr
+        .to_socket_addrs()
+        .map_err(|e| format!("http sidecar bind address {bind_addr}: {e}"))?
+        .collect::<Vec<_>>();
+    if addrs.is_empty() {
+        return Err(format!(
+            "http sidecar bind address {bind_addr} resolved to no addresses"
+        ));
+    }
+    if addrs.iter().all(|addr| addr.ip().is_loopback()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "http sidecar refuses non-loopback bind address {bind_addr}; pass --allow-remote-events to expose event streams beyond this machine"
+        ))
+    }
 }
 
 fn write_http_response(
@@ -217,6 +240,7 @@ mod tests {
     fn health_endpoint_returns_ok_json() {
         let handle = start_http_sidecar(HttpSidecarConfig {
             bind_addr: "127.0.0.1:0".to_string(),
+            allow_remote: false,
         })
         .expect("start_http_sidecar");
 
@@ -236,6 +260,7 @@ mod tests {
     fn events_endpoint_emits_sse_data_lines() {
         let handle = start_http_sidecar(HttpSidecarConfig {
             bind_addr: "127.0.0.1:0".to_string(),
+            allow_remote: false,
         })
         .expect("start_http_sidecar");
 
@@ -262,5 +287,15 @@ mod tests {
             "{payload_text}"
         );
         drop(handle);
+    }
+
+    #[test]
+    fn refuses_remote_bind_by_default() {
+        let err = start_http_sidecar(HttpSidecarConfig {
+            bind_addr: "0.0.0.0:0".to_string(),
+            allow_remote: false,
+        })
+        .expect_err("remote bind should be explicit");
+        assert!(err.contains("--allow-remote-events"), "{err}");
     }
 }

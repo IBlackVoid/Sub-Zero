@@ -59,7 +59,9 @@ pub(super) fn split_scene_ranges(cues: &[SubtitleCue]) -> Vec<(usize, usize)> {
     let mut scene_end_exclusive = 0usize;
     let mut prev_end = 0.0f64;
     for (idx, cue) in cues.iter().enumerate() {
-        let Ok((start, end)) = parse_srt_timing_line(&cue.timing) else { continue };
+        let Ok((start, end)) = parse_srt_timing_line(&cue.timing) else {
+            continue;
+        };
         let gap = (start - prev_end).max(0.0);
         if scene_start.is_none() {
             scene_start = Some(idx);
@@ -211,7 +213,9 @@ pub(super) fn source_scene_quality_score(scene: &[SubtitleCue]) -> f64 {
         return 1.0;
     }
 
-    let Ok(health) = assess_srt_health(scene) else { return 0.0 };
+    let Ok(health) = assess_srt_health(scene) else {
+        return 0.0;
+    };
 
     let mut short = 0usize;
     let mut very_short = 0usize;

@@ -31,26 +31,15 @@ pub struct ChunkTranscription {
 
 use crate::engine::transcribe::{QualityProfile, TranscribeConfig, Transcriber};
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ParallelTranscribeError {
-    Setup { source: String },
-    Transcribe { source: String },
+    #[error("failed to set up parallel transcription: {message}")]
+    Setup { message: String },
+    #[error("parallel transcription failed: {message}")]
+    Transcribe { message: String },
 }
 
 pub type ParallelTranscribeResult<T> = Result<T, ParallelTranscribeError>;
-
-impl std::fmt::Display for ParallelTranscribeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Setup { source } => {
-                write!(f, "failed to set up parallel transcription: {source}")
-            }
-            Self::Transcribe { source } => write!(f, "parallel transcription failed: {source}"),
-        }
-    }
-}
-
-impl std::error::Error for ParallelTranscribeError {}
 
 /// Transcribe all chunks in parallel and return chunk-level transcriptions.
 pub fn parallel_transcribe(
@@ -67,9 +56,9 @@ pub fn parallel_transcribe(
                 || source.starts_with("failed to create")
                 || source.starts_with("failed to serialize")
             {
-                ParallelTranscribeError::Setup { source }
+                ParallelTranscribeError::Setup { message: source }
             } else {
-                ParallelTranscribeError::Transcribe { source }
+                ParallelTranscribeError::Transcribe { message: source }
             }
         },
     )
@@ -82,8 +71,25 @@ fn parallel_transcribe_inner(
     checkpoint_path: Option<PathBuf>,
     events: EventSink,
 ) -> Result<Vec<ChunkTranscription>, String> {
+    // Probe actual GPU availability BEFORE computing timeout estimates.
+    // The user may pass --gpu but Python whisper can silently fall back to CPU
+    // when CUDA/Triton is missing, making GPU-based timeout estimates far too short.
+    let gpu_actually_available =
+        crate::engine::transcribe::probe_python_gpu_available(config);
+    let effective_config = if config.gpu && !gpu_actually_available {
+        eprintln!(
+            "warning: --gpu was requested but CUDA is not available for Python whisper; \
+             using CPU timing estimates for timeout calculation."
+        );
+        let mut adjusted = config.clone();
+        adjusted.gpu = false;
+        adjusted
+    } else {
+        config.clone()
+    };
+
     let monitor = if let Some(path) = checkpoint_path {
-        Some(Arc::new(ChunkRunMonitor::new(path, chunks, config)?))
+        Some(Arc::new(ChunkRunMonitor::new(path, chunks, &effective_config)?))
     } else {
         None
     };
@@ -95,25 +101,29 @@ fn parallel_transcribe_inner(
 
     let monitor_for_workers = monitor;
     let events_for_workers = events;
+    let effective_config_arc = Arc::new(effective_config);
     let results: Vec<Result<ChunkTranscription, String>> = pool.install(|| {
         chunks
             .par_iter()
             .map_init(
                 || {
                     (
+                        // Use original config for transcription (GPU fallback handled internally).
                         Transcriber::new(config.clone())
                             .map_err(|error| error.to_string())
                             .and_then(|opt| {
                                 opt.ok_or_else(|| "transcriber disabled explicitly".to_string())
                             }),
                         monitor_for_workers.clone(),
+                        effective_config_arc.clone(),
                     )
                 },
                 |state, chunk| match &state.0 {
                     Ok(transcriber) => transcribe_single_chunk(
                         chunk,
                         transcriber,
-                        config,
+                        // Use effective_config (GPU-corrected) for timeout estimation.
+                        &state.2,
                         state.1.as_deref(),
                         &events_for_workers,
                         chunks.len(),
@@ -148,12 +158,13 @@ fn transcribe_single_chunk(
     let mut last_issue = String::from("unknown quality gate failure");
     let predicted_secs = estimate_chunk_predicted_secs(chunk, config);
     let profile_timeout_floor = match config.quality_profile {
-        // Fast profile is still allowed to run long chunks. 120s is often too tight on Windows
-        // for python-whisper (word timing / DTW fallback can spike tail latency), which leads to
-        // empty-chunk fallbacks and cascades into MT quality failures.
-        QualityProfile::Fast => 180.0,
-        QualityProfile::Balanced => 180.0,
-        QualityProfile::Strict => 300.0,
+        // Python whisper has heavy init + DTW overhead, especially on Windows
+        // (no Triton → CPU DTW alignment). Floors must be generous enough that
+        // a 4-min chunk on a contended GPU (3 workers sharing 8GB VRAM) or
+        // on CPU can complete. Prior failures: 180s killed chunks at 5% progress.
+        QualityProfile::Fast => 300.0,
+        QualityProfile::Balanced => 420.0,
+        QualityProfile::Strict => 600.0,
     };
     let timeout_secs = (predicted_secs * 10.0 * policy.timeout_scale)
         .clamp(120.0, 3600.0)
@@ -524,20 +535,23 @@ fn parse_srt_timestamp_to_seconds(ts: &str) -> Result<f64, String> {
 
 fn estimate_chunk_predicted_secs(chunk: &AudioChunk, config: &TranscribeConfig) -> f64 {
     let chunk_duration = (chunk.end_sec - chunk.start_sec).max(1.0);
+    // Realtime factors are conservative: Python whisper on GPU is typically
+    // 5-8x realtime (medium model), not 16x, especially with VRAM contention
+    // from parallel workers. CPU factors assume no Triton (Windows common case).
     let realtime_factor = if config.gpu {
         match config.quality_profile {
-            QualityProfile::Fast => 22.0,
-            QualityProfile::Balanced => 16.0,
-            QualityProfile::Strict => 10.0,
+            QualityProfile::Fast => 10.0,
+            QualityProfile::Balanced => 6.0,
+            QualityProfile::Strict => 4.0,
         }
     } else {
         match config.quality_profile {
-            QualityProfile::Fast => 1.4,
-            QualityProfile::Balanced => 1.0,
-            QualityProfile::Strict => 0.8,
+            QualityProfile::Fast => 1.2,
+            QualityProfile::Balanced => 0.7,
+            QualityProfile::Strict => 0.5,
         }
     };
-    (chunk_duration / realtime_factor).max(8.0)
+    (chunk_duration / realtime_factor).max(15.0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -661,7 +675,9 @@ impl ChunkRunMonitor {
         attempts: usize,
         from_cache: bool,
     ) {
-        let Ok(mut state) = self.state.lock() else { return };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
 
         state
             .completed
@@ -736,7 +752,9 @@ impl ChunkRunMonitor {
     }
 
     fn record_failure(&self, chunk_index: usize, predicted_secs: f64, reason: &str) {
-        let Ok(mut state) = self.state.lock() else { return };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
         state
             .failed
             .retain(|entry| entry.chunk_index != chunk_index);
@@ -760,7 +778,9 @@ impl ChunkRunMonitor {
     }
 
     fn adapt_policy(&self, slow: bool, low_quality: bool, timeout: bool) {
-        let Ok(mut policy) = self.policy.lock() else { return };
+        let Ok(mut policy) = self.policy.lock() else {
+            return;
+        };
 
         if slow {
             policy.timeout_scale = (policy.timeout_scale * 1.20).clamp(1.0, 3.0);

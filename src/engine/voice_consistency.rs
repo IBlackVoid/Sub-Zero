@@ -32,13 +32,16 @@ impl VoiceVector {
         }
         let words: Vec<String> = trimmed
             .split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
-                     .to_ascii_lowercase())
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+                    .to_ascii_lowercase()
+            })
             .filter(|w| !w.is_empty())
             .collect();
         let total = words.len().max(1) as f32;
 
-        let contractions = words.iter()
+        let contractions = words
+            .iter()
             .filter(|w| w.contains('\'') && CONTRACTION_TAILS.iter().any(|t| w.ends_with(t)))
             .count() as f32;
 
@@ -52,11 +55,19 @@ impl VoiceVector {
         }
         let politeness_score = (politeness / total).clamp(-1.0, 1.0);
 
-        let pronouns = words.iter().filter(|w| ALL_PRONOUNS.contains(&w.as_str())).count() as f32;
-        let first_person = words.iter()
+        let pronouns = words
+            .iter()
+            .filter(|w| ALL_PRONOUNS.contains(&w.as_str()))
+            .count() as f32;
+        let first_person = words
+            .iter()
             .filter(|w| FIRST_PERSON.contains(&w.as_str()))
             .count() as f32;
-        let first_person_ratio = if pronouns > 0.0 { first_person / pronouns } else { 0.0 };
+        let first_person_ratio = if pronouns > 0.0 {
+            first_person / pronouns
+        } else {
+            0.0
+        };
 
         let sentences = sentence_count(trimmed) as f32;
         let avg_sentence_len = total / sentences.max(1.0);
@@ -66,9 +77,14 @@ impl VoiceVector {
             .filter(|s| !s.trim().is_empty())
             .filter(|s| s.contains('?'))
             .count() as f32;
-        let question_ratio = if sentences > 0.0 { questions / sentences } else { 0.0 };
+        let question_ratio = if sentences > 0.0 {
+            questions / sentences
+        } else {
+            0.0
+        };
 
-        let interjections = words.iter()
+        let interjections = words
+            .iter()
             .filter(|w| CASUAL_INTERJECTIONS.contains(&w.as_str()))
             .count() as f32;
         let interjection_ratio = interjections / total;
@@ -100,11 +116,11 @@ impl VoiceVector {
     pub fn update_mean(&mut self, sample: &Self, n: u32) {
         let n_f = n as f32;
         let alpha = 1.0 / (n_f + 1.0);
-        self.contraction_ratio  += alpha * (sample.contraction_ratio  - self.contraction_ratio);
-        self.politeness_score   += alpha * (sample.politeness_score   - self.politeness_score);
+        self.contraction_ratio += alpha * (sample.contraction_ratio - self.contraction_ratio);
+        self.politeness_score += alpha * (sample.politeness_score - self.politeness_score);
         self.first_person_ratio += alpha * (sample.first_person_ratio - self.first_person_ratio);
-        self.avg_sentence_len   += alpha * (sample.avg_sentence_len   - self.avg_sentence_len);
-        self.question_ratio     += alpha * (sample.question_ratio     - self.question_ratio);
+        self.avg_sentence_len += alpha * (sample.avg_sentence_len - self.avg_sentence_len);
+        self.question_ratio += alpha * (sample.question_ratio - self.question_ratio);
         self.interjection_ratio += alpha * (sample.interjection_ratio - self.interjection_ratio);
     }
 }
@@ -149,11 +165,7 @@ impl VoicePriors {
         }
     }
 
-    pub fn score_and_update(
-        &mut self,
-        speaker_key: &str,
-        sample: &VoiceVector,
-    ) -> Option<f32> {
+    pub fn score_and_update(&mut self, speaker_key: &str, sample: &VoiceVector) -> Option<f32> {
         let entry = self
             .priors
             .entry(speaker_key.to_string())
@@ -230,7 +242,9 @@ impl VoicePriors {
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        let Some(p) = Self::path() else { return Ok(()); };
+        let Some(p) = Self::path() else {
+            return Ok(());
+        };
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -245,9 +259,12 @@ impl VoicePriors {
         if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
             return Some(PathBuf::from(home).join("voice_priors.json"));
         }
-        let home = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))?;
-        Some(PathBuf::from(home).join(".sub-zero").join("voice_priors.json"))
+        let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+        Some(
+            PathBuf::from(home)
+                .join(".sub-zero")
+                .join("voice_priors.json"),
+        )
     }
 
     #[allow(dead_code)]
@@ -271,31 +288,28 @@ fn normalize_speaker_id(s: &str) -> String {
     s.trim().to_ascii_lowercase()
 }
 
-const CONTRACTION_TAILS: &[&str] = &[
-    "'s", "'re", "'ve", "'ll", "'m", "'d", "n't", "'em",
-];
+const CONTRACTION_TAILS: &[&str] = &["'s", "'re", "'ve", "'ll", "'m", "'d", "n't", "'em"];
 
 const POLITE_TOKENS: &[&str] = &[
-    "please", "sir", "ma'am", "thank", "thanks", "kindly", "pardon",
-    "excuse", "would", "could", "may",
+    "please", "sir", "ma'am", "thank", "thanks", "kindly", "pardon", "excuse", "would", "could",
+    "may",
 ];
 
 const INFORMAL_TOKENS: &[&str] = &[
-    "yeah", "yo", "dude", "bro", "ain't", "gonna", "wanna", "gotta",
-    "lemme", "kinda", "sorta", "nah", "yep", "nope", "huh",
+    "yeah", "yo", "dude", "bro", "ain't", "gonna", "wanna", "gotta", "lemme", "kinda", "sorta",
+    "nah", "yep", "nope", "huh",
 ];
 
 const FIRST_PERSON: &[&str] = &["i", "me", "my", "mine", "myself", "we", "us", "our", "ours"];
 
 const ALL_PRONOUNS: &[&str] = &[
-    "i", "me", "my", "mine", "myself", "we", "us", "our", "ours",
-    "you", "your", "yours", "yourself",
-    "he", "she", "it", "they", "him", "her", "them", "their", "theirs", "his", "hers", "its",
+    "i", "me", "my", "mine", "myself", "we", "us", "our", "ours", "you", "your", "yours",
+    "yourself", "he", "she", "it", "they", "him", "her", "them", "their", "theirs", "his", "hers",
+    "its",
 ];
 
 const CASUAL_INTERJECTIONS: &[&str] = &[
-    "yeah", "oh", "huh", "well", "um", "uh", "wow", "hey", "ah",
-    "ouch", "ugh", "hmm", "okay", "ok",
+    "yeah", "oh", "huh", "well", "um", "uh", "wow", "hey", "ah", "ouch", "ugh", "hmm", "okay", "ok",
 ];
 
 #[cfg(test)]
@@ -343,12 +357,9 @@ mod tests {
 
     #[test]
     fn distance_increases_with_register_gap() {
-        let formal = VoiceVector::extract(
-            "Pardon me, sir, but I would prefer to wait.");
-        let casual = VoiceVector::extract(
-            "Yeah, nah, I'm gonna chill, dude.");
-        let same = VoiceVector::extract(
-            "Pardon me, sir, but I would also like to wait.");
+        let formal = VoiceVector::extract("Pardon me, sir, but I would prefer to wait.");
+        let casual = VoiceVector::extract("Yeah, nah, I'm gonna chill, dude.");
+        let same = VoiceVector::extract("Pardon me, sir, but I would also like to wait.");
         assert!(formal.distance(&casual) > formal.distance(&same));
     }
 

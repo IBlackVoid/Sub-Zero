@@ -18,23 +18,11 @@ pub enum QualityProfile {
     Strict,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum QualityProfileParseError {
+    #[error("invalid profile: {value} (expected one of: fast, balanced, strict)")]
     InvalidValue { value: String },
 }
-
-impl std::fmt::Display for QualityProfileParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidValue { value } => write!(
-                f,
-                "invalid profile: {value} (expected one of: fast, balanced, strict)"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for QualityProfileParseError {}
 
 impl QualityProfile {
     pub fn parse(value: &str) -> Result<Self, QualityProfileParseError> {
@@ -104,40 +92,21 @@ pub struct TranscriptionResult {
     pub audio_wav_path: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum TranscribeError {
-    Initialization { source: String },
-    Transcription { input: PathBuf, source: String },
-    Probe { input: PathBuf, source: String },
+    #[error("failed to initialize transcriber: {message}")]
+    Initialization { message: String },
+    #[error("failed to transcribe {}: {message}", input.display())]
+    Transcription { input: PathBuf, message: String },
+    #[error("failed to probe media duration for {}: {message}", input.display())]
+    Probe { input: PathBuf, message: String },
 }
 
 pub type TranscribeResult<T> = Result<T, TranscribeError>;
 
-impl std::fmt::Display for TranscribeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Initialization { source } => {
-                write!(f, "failed to initialize transcriber: {source}")
-            }
-            Self::Transcription { input, source } => {
-                write!(f, "failed to transcribe {}: {source}", input.display())
-            }
-            Self::Probe { input, source } => {
-                write!(
-                    f,
-                    "failed to probe media duration for {}: {source}",
-                    input.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for TranscribeError {}
-
 impl Transcriber {
     pub fn new(config: TranscribeConfig) -> TranscribeResult<Option<Self>> {
-        Self::new_inner(config).map_err(|source| TranscribeError::Initialization { source })
+        Self::new_inner(config).map_err(|message| TranscribeError::Initialization { message })
     }
 
     fn new_inner(config: TranscribeConfig) -> Result<Option<Self>, String> {
@@ -215,9 +184,9 @@ impl Transcriber {
 
     pub fn transcribe_video_to_srt(&self, video: &Path) -> TranscribeResult<TranscriptionResult> {
         self.transcribe_video_to_srt_inner(video)
-            .map_err(|source| TranscribeError::Transcription {
+            .map_err(|message| TranscribeError::Transcription {
                 input: video.to_path_buf(),
-                source,
+                message,
             })
     }
 
@@ -239,9 +208,9 @@ impl Transcriber {
     #[allow(dead_code)]
     pub fn transcribe_wav_to_srt(&self, wav_path: &Path) -> TranscribeResult<PathBuf> {
         self.transcribe_wav_to_srt_inner(wav_path)
-            .map_err(|source| TranscribeError::Transcription {
+            .map_err(|message| TranscribeError::Transcription {
                 input: wav_path.to_path_buf(),
-                source,
+                message,
             })
     }
 
@@ -261,9 +230,9 @@ impl Transcriber {
         timeout_secs: f64,
     ) -> TranscribeResult<PathBuf> {
         self.transcribe_wav_to_srt_with_timeout_inner(wav_path, timeout_secs)
-            .map_err(|source| TranscribeError::Transcription {
+            .map_err(|message| TranscribeError::Transcription {
                 input: wav_path.to_path_buf(),
-                source,
+                message,
             })
     }
 
@@ -669,9 +638,9 @@ pub(crate) fn detect_speech_intervals_from_wav(
 
 /// Public wrapper so the pipeline module can probe audio duration.
 pub fn ffprobe_duration_seconds_pub(path: &Path) -> TranscribeResult<f64> {
-    ffprobe_duration_seconds(path).map_err(|source| TranscribeError::Probe {
+    ffprobe_duration_seconds(path).map_err(|message| TranscribeError::Probe {
         input: path.to_path_buf(),
-        source,
+        message,
     })
 }
 
@@ -883,7 +852,11 @@ fn run_python_whisper(
     python_bin: &str,
     timeout: Option<Duration>,
 ) -> Result<PathBuf, String> {
-    let translate_to_english = config.target_lang.eq_ignore_ascii_case("en");
+    // Bug fix: only use --task translate when source != target AND target is English.
+    // Same-language runs (e.g., en→en) must use --task transcribe; otherwise whisper's
+    // translation head garbles the output and emits "timestamps on translations" warnings.
+    let is_cross_lingual = !config.source_lang.eq_ignore_ascii_case(&config.target_lang);
+    let translate_to_english = is_cross_lingual && config.target_lang.eq_ignore_ascii_case("en");
 
     let requested_device = py_device_from_args(&config.whisper_args);
     let requested_cuda = requested_device
@@ -1050,10 +1023,7 @@ fn run_command_with_timeout(
                         Ok(n) => {
                             // Mirror to our stderr so progress is still visible,
                             // and accumulate for post-mortem inspection.
-                            let _ = std::io::Write::write_all(
-                                &mut std::io::stderr(),
-                                &tmp[..n],
-                            );
+                            let _ = std::io::Write::write_all(&mut std::io::stderr(), &tmp[..n]);
                             buf.extend_from_slice(&tmp[..n]);
                             // Keep the captured tail bounded so OOM in long
                             // runs doesn't itself OOM the parent.
@@ -1093,16 +1063,12 @@ fn run_command_with_timeout(
             std::thread::sleep(Duration::from_millis(200));
         };
 
-        let stderr_buf = drain
-            .and_then(|h| h.join().ok())
-            .unwrap_or_default();
+        let stderr_buf = drain.and_then(|h| h.join().ok()).unwrap_or_default();
 
         return match outcome {
             Ok(()) => Ok(()),
             Err(base) => {
-                let trimmed = String::from_utf8_lossy(&stderr_buf)
-                    .trim()
-                    .to_string();
+                let trimmed = String::from_utf8_lossy(&stderr_buf).trim().to_string();
                 if trimmed.is_empty() {
                     Err(base)
                 } else {
@@ -1135,6 +1101,19 @@ fn run_command_with_timeout(
     Ok(())
 }
 
+/// Probe whether CUDA is actually available for the Python whisper backend.
+/// Used by the parallel module to compute accurate timeout estimates.
+pub(crate) fn probe_python_gpu_available(config: &TranscribeConfig) -> bool {
+    if !config.gpu {
+        return false;
+    }
+    // Need to discover the python binary (same logic as Transcriber::new).
+    let python_bin = match python_whisper_available() {
+        Ok(Some(bin)) => bin,
+        _ => return false,
+    };
+    python_cuda_available(&python_bin).unwrap_or(false)
+}
 
 fn python_cuda_available(python_bin: &str) -> Result<bool, String> {
     let output = Command::new(python_bin)
@@ -1458,8 +1437,6 @@ mod tests {
         assert!(!super::is_cuda_oom_transcribe_error(
             "ffmpeg failed: invalid stream index"
         ));
-        assert!(!super::is_cuda_oom_transcribe_error(
-            "no cues found in SRT"
-        ));
+        assert!(!super::is_cuda_oom_transcribe_error("no cues found in SRT"));
     }
 }

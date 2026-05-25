@@ -52,30 +52,19 @@ pub struct TranslatorConfig {
     pub quality_profile: QualityProfile,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum TranslatorError {
-    Initialization { source: String },
-    Translate { source: String },
+    #[error("failed to initialize translator: {message}")]
+    Initialization { message: String },
+    #[error("translation failed: {message}")]
+    Translate { message: String },
 }
 
 pub type TranslatorResult<T> = Result<T, TranslatorError>;
 
-impl std::fmt::Display for TranslatorError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Initialization { source } => {
-                write!(f, "failed to initialize translator: {source}")
-            }
-            Self::Translate { source } => write!(f, "translation failed: {source}"),
-        }
-    }
-}
-
-impl std::error::Error for TranslatorError {}
-
 impl Translator {
     pub fn new(config: TranslatorConfig) -> TranslatorResult<Self> {
-        Self::new_inner(config).map_err(|source| TranslatorError::Initialization { source })
+        Self::new_inner(config).map_err(|message| TranslatorError::Initialization { message })
     }
 
     fn new_inner(config: TranslatorConfig) -> Result<Self, String> {
@@ -225,7 +214,7 @@ impl Translator {
         extra_tags: &[Vec<String>],
     ) -> TranslatorResult<Vec<SubtitleCue>> {
         self.translate_all_inner(cues, extra_tags)
-            .map_err(|source| TranslatorError::Translate { source })
+            .map_err(|message| TranslatorError::Translate { message })
     }
 
     fn translate_all_inner(
@@ -623,7 +612,9 @@ fn split_scene_ranges(cues: &[SubtitleCue]) -> Vec<(usize, usize)> {
     let mut scene_end_exclusive = 0usize;
     let mut prev_end = 0.0f64;
     for (idx, cue) in cues.iter().enumerate() {
-        let Ok((start, end)) = parse_srt_timing_line(&cue.timing) else { continue };
+        let Ok((start, end)) = parse_srt_timing_line(&cue.timing) else {
+            continue;
+        };
         if scene_start.is_none() {
             scene_start = Some(idx);
         } else {

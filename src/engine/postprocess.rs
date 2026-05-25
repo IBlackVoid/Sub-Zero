@@ -95,38 +95,76 @@ fn compress_to_budget(input: &str, l_max: usize) -> String {
 }
 
 const FILLER_PHRASES: &[&str] = &[
-    "you know,", "you know ", "i mean,", "i mean ",
-    "well,", "well ", "actually,", "actually ",
-    "literally,", "literally ", "basically,", "basically ",
-    "uh,", "uh ", "uhm,", "uhm ", "um,", "um ",
-    "kind of ", "kinda ", "sort of ", "sorta ",
-    "like,", " like ",
+    "you know,",
+    "you know ",
+    "i mean,",
+    "i mean ",
+    "well,",
+    "well ",
+    "actually,",
+    "actually ",
+    "literally,",
+    "literally ",
+    "basically,",
+    "basically ",
+    "uh,",
+    "uh ",
+    "uhm,",
+    "uhm ",
+    "um,",
+    "um ",
+    "kind of ",
+    "kinda ",
+    "sort of ",
+    "sorta ",
+    "like,",
+    " like ",
 ];
 
 fn remove_filler_phrases(input: &str) -> String {
+    // `to_ascii_lowercase` only maps A-Z → a-z (one byte → one byte) and
+    // is a no-op for every other byte, including the trailing bytes of
+    // any multi-byte UTF-8 sequence. So `out` and `lowered` share byte
+    // indices for the whole life of this function — we can mutate them
+    // in lockstep without re-lowercasing after every edit, which the
+    // previous implementation did once per match.
     let mut out = input.to_string();
-    let lowered = out.to_ascii_lowercase();
+    let mut lowered = out.to_ascii_lowercase();
+    debug_assert_eq!(out.len(), lowered.len());
+
     for filler in FILLER_PHRASES {
         let mut start = 0usize;
-        let mut next_lowered = lowered.clone();
-        while let Some(pos) = next_lowered[start..].find(filler) {
+        while let Some(pos) = lowered[start..].find(filler) {
             let abs = start + pos;
-            // Replace in-place in the original-case string so we keep
-            // capitalisation everywhere except the deleted span.
-            if abs + filler.len() <= out.len() {
-                out.replace_range(abs..(abs + filler.len()), "");
-                next_lowered = out.to_ascii_lowercase();
-                start = abs;
-            } else {
+            let end = abs + filler.len();
+            if end > out.len() {
                 break;
             }
+            out.replace_range(abs..end, "");
+            lowered.replace_range(abs..end, "");
+            start = abs;
         }
     }
-    // Collapse any double spaces left behind.
-    while out.contains("  ") {
-        out = out.replace("  ", " ");
+
+    // Collapse runs of ASCII spaces to a single space in one O(n) pass,
+    // instead of the previous `while contains("  ") { replace }` which
+    // re-scans the whole string every iteration.
+    let bytes = out.as_bytes();
+    let mut collapsed = Vec::<u8>::with_capacity(bytes.len());
+    let mut prev_space = false;
+    for &b in bytes {
+        let is_space = b == b' ';
+        if is_space && prev_space {
+            continue;
+        }
+        collapsed.push(b);
+        prev_space = is_space;
     }
-    out.trim().to_string()
+    // Safe: we only filtered b' ' bytes, which never appear inside a
+    // multi-byte UTF-8 continuation. The remaining sequence is the same
+    // UTF-8 as `out` minus single ASCII spaces.
+    let s = String::from_utf8(collapsed).unwrap_or(out);
+    s.trim().to_string()
 }
 
 const CONTRACTION_PAIRS: &[(&str, &str)] = &[
@@ -251,14 +289,20 @@ fn cue_duration_secs(timing: &str) -> Option<f64> {
     let start_secs = parse_timestamp(start_raw)?;
     let end_secs = parse_timestamp(end_raw)?;
     let dur = end_secs - start_secs;
-    if dur > 0.0 { Some(dur) } else { None }
+    if dur > 0.0 {
+        Some(dur)
+    } else {
+        None
+    }
 }
 
 fn parse_timestamp(s: &str) -> Option<f64> {
     // Accepts HH:MM:SS,mmm or HH:MM:SS.mmm.
     let s = s.replace(',', ".");
     let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() != 3 { return None; }
+    if parts.len() != 3 {
+        return None;
+    }
     let h: f64 = parts[0].parse().ok()?;
     let m: f64 = parts[1].parse().ok()?;
     let sm: f64 = parts[2].parse().ok()?;
@@ -934,12 +978,17 @@ mod tests {
             text: "Well, you know, I'm tired.".to_string(),
         }];
         super::compress_reading_rate(&mut cues, 17.0);
-        assert!(cues[0].text.chars().count() <= 17,
-            "expected ≤ 17 chars, got {:?}", cues[0].text);
+        assert!(
+            cues[0].text.chars().count() <= 17,
+            "expected ≤ 17 chars, got {:?}",
+            cues[0].text
+        );
         // Should retain core meaning even after stripping fillers.
-        assert!(cues[0].text.to_lowercase().contains("tired")
-             || cues[0].text.contains("…"),
-            "expected core meaning, got {:?}", cues[0].text);
+        assert!(
+            cues[0].text.to_lowercase().contains("tired") || cues[0].text.contains("…"),
+            "expected core meaning, got {:?}",
+            cues[0].text
+        );
     }
 
     #[test]
@@ -953,10 +1002,16 @@ mod tests {
         super::compress_reading_rate(&mut cues, 17.0);
         // The contraction pass should bring it under budget without
         // truncation (no trailing ellipsis).
-        assert!(!cues[0].text.ends_with('…'),
-            "should not truncate, got {:?}", cues[0].text);
-        assert!(cues[0].text.chars().count() <= 34,
-            "expected ≤ 34 chars, got {:?}", cues[0].text);
+        assert!(
+            !cues[0].text.ends_with('…'),
+            "should not truncate, got {:?}",
+            cues[0].text
+        );
+        assert!(
+            cues[0].text.chars().count() <= 34,
+            "expected ≤ 34 chars, got {:?}",
+            cues[0].text
+        );
     }
 
     #[test]
@@ -968,10 +1023,16 @@ mod tests {
             text: "supercalifragilisticexpialidocious".to_string(),
         }];
         super::compress_reading_rate(&mut cues, 17.0);
-        assert!(cues[0].text.ends_with('…'),
-            "expected ellipsis, got {:?}", cues[0].text);
-        assert!(cues[0].text.chars().count() <= 8,
-            "expected ≤ 8 chars, got {:?}", cues[0].text);
+        assert!(
+            cues[0].text.ends_with('…'),
+            "expected ellipsis, got {:?}",
+            cues[0].text
+        );
+        assert!(
+            cues[0].text.chars().count() <= 8,
+            "expected ≤ 8 chars, got {:?}",
+            cues[0].text
+        );
     }
 
     #[test]
@@ -983,7 +1044,9 @@ mod tests {
         }];
         super::compress_reading_rate(&mut cues, 17.0);
         // No timing → no compression, regardless of length.
-        assert_eq!(cues[0].text,
-            "Some really very extremely long line of dialogue here.");
+        assert_eq!(
+            cues[0].text,
+            "Some really very extremely long line of dialogue here."
+        );
     }
 }

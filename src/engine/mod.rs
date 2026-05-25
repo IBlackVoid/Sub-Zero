@@ -1,8 +1,11 @@
+pub mod cache;
 pub mod character_glossary;
 pub mod chunker;
 pub mod context;
 pub mod deep_scan;
 pub mod doom_qlock;
+pub mod f3_stream;
+pub mod lfas;
 pub mod events;
 pub mod http_sidecar;
 pub mod live_replanner;

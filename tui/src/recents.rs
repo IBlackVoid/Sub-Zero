@@ -25,12 +25,10 @@ pub struct Recents {
 impl Recents {
     pub fn load() -> Self {
         match Self::path() {
-            Some(p) if p.is_file() => {
-                std::fs::read_to_string(&p)
-                    .ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_default()
-            }
+            Some(p) if p.is_file() => std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
             _ => Self::default(),
         }
     }
@@ -47,7 +45,10 @@ impl Recents {
         self.entries.retain(|e| e.path != normalised);
         self.entries.insert(
             0,
-            Recent { path: normalised, last_used_epoch: now },
+            Recent {
+                path: normalised,
+                last_used_epoch: now,
+            },
         );
         if self.entries.len() > MAX_RECENTS {
             self.entries.truncate(MAX_RECENTS);
@@ -73,8 +74,11 @@ impl Recents {
         if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
             return Some(PathBuf::from(home).join("tui_recents.json"));
         }
-        let home = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))?;
-        Some(PathBuf::from(home).join(".sub-zero").join("tui_recents.json"))
+        let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+        Some(
+            PathBuf::from(home)
+                .join(".sub-zero")
+                .join("tui_recents.json"),
+        )
     }
 }

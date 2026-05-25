@@ -52,8 +52,8 @@ impl Envelope {
 
 pub fn block_for(value: f32) -> char {
     const GLYPHS: [char; 9] = [
-        ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}',
-        '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}',
+        ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
     ];
     let idx = ((value.clamp(0.0, 1.0) * 8.0).round() as usize).min(8);
     GLYPHS[idx]
@@ -96,7 +96,10 @@ mod tests {
 
     #[test]
     fn window_handles_empty_envelope() {
-        let env = Envelope { samples: vec![], interval_ms: 50 };
+        let env = Envelope {
+            samples: vec![],
+            interval_ms: 50,
+        };
         let bars = env.window(1000, 800, 16);
         assert!(bars.is_empty());
     }
@@ -104,7 +107,10 @@ mod tests {
     #[test]
     fn window_handles_normal_case() {
         let samples = (0..20).map(|i| (i as f32) / 19.0).collect();
-        let env = Envelope { samples, interval_ms: 50 };
+        let env = Envelope {
+            samples,
+            interval_ms: 50,
+        };
         let bars = env.window(1000, 800, 8);
         assert_eq!(bars.len(), 8);
         assert!(bars[bars.len() - 1] > 0.8);

@@ -1,19 +1,92 @@
 [workspace]
-members = [".", "tui"]
+members = [".", "tui", "xtask"]
 resolver = "2"
 
 [package]
 name = "sub-zero"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.80"
 authors = ["IBVoid"]
-description = "Offline-first subtitle translation utility."
+description = "Offline-first subtitle translation engine — local ASR + neural MT + adaptive scheduling + learned quality gate, no cloud."
+documentation = "https://docs.rs/sub-zero"
+homepage = "https://github.com/IBlackVoid/Sub-Zero"
+repository = "https://github.com/IBlackVoid/Sub-Zero"
+readme = "README.md"
+license = "MIT"
+keywords = ["subtitle", "translation", "whisper", "nllb", "offline"]
+categories = [
+    "command-line-utilities",
+    "multimedia::video",
+    "internationalization",
+    "localization",
+]
+exclude = [
+    "benchmarks/",
+    "models/",
+    "fixtures/",
+    "scripts/__pycache__/",
+    "**/*.mp4",
+    "**/*.mkv",
+    "**/*.wav",
+    "**/*.pyc",
+]
+
+[lib]
+name = "sub_zero"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sub-zero"
+path = "src/main.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rayon = "1.10"
 strsim = "0.11"
+thiserror = "2"
+# `crossbeam-channel` gives us MPMC primitives. The stream-async pipeline
+# in `engine::pipeline::stream_async` needs multiple workers to recv from
+# a single job queue without the `Arc<Mutex<mpsc::Receiver>>` anti-pattern.
+crossbeam-channel = "0.5"
+# `memchr` powers the streaming SRT parser in `engine::srt`: zero-copy
+# block detection on `&str` without the read-to-string + replace fallback.
+memchr = "2"
+# `sha2` powers content-addressing in `engine::cache`. The cache is the
+# ADR-0001 Phase A pilot — a one-function proof-of-concept for the
+# content-addressed demand-driven build graph that may become the
+# engine's execution model (see `docs/adr/0001-content-addressed-build-graph.md`).
+sha2 = "0.10"
+
+[dev-dependencies]
+# Criterion gives us statistically-meaningful microbench numbers for the
+# hot engine paths (`bench_engine`). Pinned at 0.5 — the 0.6 line bumps
+# MSRV further than we need.
+criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
+# Property-based testing for invariant-heavy engine components (phi,
+# LFAS scheduler, SRT parser, stitcher dedup).
+proptest = "1"
+
+[[bench]]
+name = "engine"
+path = "benches/bench_engine.rs"
+harness = false
+required-features = ["bench-internals"]
+
+[features]
+# `bench-internals` exposes private engine primitives through the
+# `bench_internals` shim in `lib.rs`. Required to compile the bench
+# harness in `benches/bench_engine.rs`. Not enabled by default — the
+# published crate does not ship the cached `parse_srt_cached` variant
+# in its public API. The systems-engineer specialist audit (2026-05-23)
+# flagged this gate as necessary because `parse_srt_cached` is
+# measurably slower than uncached `parse_srt` on its current input
+# size (ADR-0001 Phase A measurements at
+# `docs/adr/0001_phase_a_measurements.md`); leaving a slower variant
+# in the public surface would be a perpetual trap for downstream users.
+bench-internals = []
+default = []
 
 [profile.release]
 lto = true

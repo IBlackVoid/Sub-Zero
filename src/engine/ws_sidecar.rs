@@ -1,11 +1,12 @@
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct WsSidecarConfig {
     pub bind_addr: String,
+    pub allow_remote: bool,
 }
 
 #[derive(Debug)]
@@ -16,6 +17,7 @@ pub struct WsSidecarHandle {
 }
 
 pub fn start_ws_sidecar(config: WsSidecarConfig) -> Result<WsSidecarHandle, String> {
+    validate_bind_addr(&config.bind_addr, config.allow_remote)?;
     let listener = TcpListener::bind(&config.bind_addr)
         .map_err(|e| format!("ws sidecar bind {}: {e}", config.bind_addr))?;
     #[cfg(test)]
@@ -86,13 +88,18 @@ fn run_ws_sidecar(listener: TcpListener, events_rx: Receiver<String>) {
 }
 
 fn maybe_upgrade_to_websocket(stream: &mut TcpStream) -> Result<bool, std::io::Error> {
-    let Some(raw) = read_http_request(stream, 8 * 1024)? else { return Ok(false) };
+    let Some(raw) = read_http_request(stream, 8 * 1024)? else {
+        return Ok(false);
+    };
 
     let (request_line, headers) = parse_http_request(&raw);
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
     if method != "GET" || path != "/ws" {
+        return Ok(false);
+    }
+    if !origin_is_allowed(&headers) {
         return Ok(false);
     }
 
@@ -129,12 +136,110 @@ fn maybe_upgrade_to_websocket(stream: &mut TcpStream) -> Result<bool, std::io::E
 Upgrade: websocket\r\n\
 Connection: Upgrade\r\n\
 Sec-WebSocket-Accept: {accept}\r\n\
-Access-Control-Allow-Origin: *\r\n\
 \r\n"
     );
     stream.write_all(response.as_bytes())?;
     stream.flush()?;
     Ok(true)
+}
+
+fn validate_bind_addr(bind_addr: &str, allow_remote: bool) -> Result<(), String> {
+    if allow_remote {
+        return Ok(());
+    }
+    let addrs = bind_addr
+        .to_socket_addrs()
+        .map_err(|e| format!("ws sidecar bind address {bind_addr}: {e}"))?
+        .collect::<Vec<_>>();
+    if addrs.is_empty() {
+        return Err(format!(
+            "ws sidecar bind address {bind_addr} resolved to no addresses"
+        ));
+    }
+    if addrs.iter().all(|addr| addr.ip().is_loopback()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "ws sidecar refuses non-loopback bind address {bind_addr}; pass --allow-remote-events to expose event streams beyond this machine"
+        ))
+    }
+}
+
+// Origin allowlist for the WebSocket upgrade. The previous version used
+// `starts_with` which was vulnerable to host-prefix spoofing:
+// `http://localhost.evil.com`, `http://127.evil.com`, `http://[::1]@evil.com`
+// would all pass. The fix parses the Origin into (scheme, host) and
+// compares the *host* against an exact-match allowlist.
+//
+// Loopback hosts only. `null` origins (sandboxed iframes, file:// pages)
+// are still accepted to keep parity with the prior policy; an attacker
+// would need to deliver a malicious file:// URL onto the victim's box,
+// which is out of scope for a loopback-only sidecar.
+fn origin_is_allowed(headers: &[(String, String)]) -> bool {
+    let Some(origin) = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("Origin"))
+        .map(|(_, v)| v.trim())
+    else {
+        return true;
+    };
+    origin_value_is_allowed(origin)
+}
+
+fn origin_value_is_allowed(origin: &str) -> bool {
+    let origin = origin.trim();
+    let lowered = origin.to_ascii_lowercase();
+    if lowered == "null" {
+        return true;
+    }
+    let Some((scheme, host)) = parse_origin_authority(&lowered) else {
+        return false;
+    };
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+// Parse an HTTP Origin header value into (scheme, host) lowercased.
+// Returns None if the value is not a well-formed `scheme://authority`
+// or if the authority is malformed (junk after an IPv6 `]`, etc.).
+//
+// The grammar we honour is intentionally narrower than RFC 3986 — we
+// only need it strict enough to reject every host-prefix spoof we can
+// think of; nothing here is parsed for re-emission.
+fn parse_origin_authority(origin: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = origin.split_once("://")?;
+    if scheme.is_empty() {
+        return None;
+    }
+    // Strip any path / query / fragment after the authority.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // Strip userinfo (the `localhost@evil.com` trick).
+    let authority = match authority.rsplit_once('@') {
+        Some((_, host_port)) => host_port,
+        None => authority,
+    };
+    if authority.is_empty() {
+        return None;
+    }
+    // IPv6 literal: `[host]` or `[host]:port`. Anything after `]` that
+    // isn't `:port` is malformed and rejected.
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, after) = rest.split_once(']')?;
+        if !after.is_empty() && !after.starts_with(':') {
+            return None;
+        }
+        return Some((scheme, host));
+    }
+    // IPv4 / hostname with optional `:port`. Use rsplit so a hostname
+    // containing colons (shouldn't happen unbracketed but be defensive)
+    // doesn't split at the wrong place.
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => authority,
+    };
+    Some((scheme, host))
 }
 
 fn read_http_request(
@@ -388,6 +493,7 @@ Sec-WebSocket-Version: 13\r\n\
     fn websocket_upgrade_returns_101() {
         let handle = start_ws_sidecar(WsSidecarConfig {
             bind_addr: "127.0.0.1:0".to_string(),
+            allow_remote: false,
         })
         .expect("start_ws_sidecar");
 
@@ -405,6 +511,7 @@ Sec-WebSocket-Version: 13\r\n\
     fn websocket_broadcast_sends_text_frame() {
         let handle = start_ws_sidecar(WsSidecarConfig {
             bind_addr: "127.0.0.1:0".to_string(),
+            allow_remote: false,
         })
         .expect("start_ws_sidecar");
 
@@ -438,6 +545,41 @@ Sec-WebSocket-Version: 13\r\n\
         assert_eq!(std::str::from_utf8(&payload).unwrap(), msg);
         drop(handle);
     }
+
+    #[test]
+    fn rejects_remote_origin() {
+        let handle = start_ws_sidecar(WsSidecarConfig {
+            bind_addr: "127.0.0.1:0".to_string(),
+            allow_remote: false,
+        })
+        .expect("start_ws_sidecar");
+
+        let mut stream = TcpStream::connect(&handle.bound_addr).expect("connect");
+        let req = "GET /ws HTTP/1.1\r\n\
+Host: localhost\r\n\
+Origin: https://example.invalid\r\n\
+Upgrade: websocket\r\n\
+Connection: Upgrade\r\n\
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+Sec-WebSocket-Version: 13\r\n\
+\r\n";
+        stream.write_all(req.as_bytes()).expect("write");
+        stream.flush().expect("flush");
+        let resp =
+            String::from_utf8_lossy(&read_until_double_crlf(&mut stream, 16 * 1024)).to_string();
+        assert!(resp.contains("400 Bad Request"), "{resp}");
+        drop(handle);
+    }
+
+    #[test]
+    fn refuses_remote_bind_by_default() {
+        let err = start_ws_sidecar(WsSidecarConfig {
+            bind_addr: "0.0.0.0:0".to_string(),
+            allow_remote: false,
+        })
+        .expect_err("remote bind should be explicit");
+        assert!(err.contains("--allow-remote-events"), "{err}");
+    }
 }
 
 #[cfg(test)]
@@ -449,5 +591,71 @@ mod accept_key_tests {
         let key = "dGhlIHNhbXBsZSBub25jZQ==";
         let accept = websocket_accept_key(key);
         assert_eq!(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::origin_value_is_allowed;
+
+    #[test]
+    fn loopback_origins_are_allowed() {
+        for origin in [
+            "http://localhost",
+            "http://localhost:3000",
+            "https://localhost:8443",
+            "http://127.0.0.1",
+            "http://127.0.0.1:8080",
+            "http://[::1]",
+            "http://[::1]:9000",
+            "null",
+            "NULL",
+            "  http://localhost:1234  ",
+        ] {
+            assert!(origin_value_is_allowed(origin), "should allow: {origin}");
+        }
+    }
+
+    #[test]
+    fn host_prefix_spoofs_are_rejected() {
+        // These all bypassed the previous starts_with() check.
+        for origin in [
+            "http://localhost.evil.com",
+            "https://localhost.evil.com:443",
+            "http://127.0.0.1.evil.com",
+            "http://127.evil.com",
+            "http://[::1].evil.com",
+            "http://[::1]extra",
+            "http://localhost@evil.com",
+            "http://localhost@evil.com:80",
+            "http://evil.com#localhost",
+            "http://evil.com?localhost",
+            "http://evil.com/localhost",
+        ] {
+            assert!(!origin_value_is_allowed(origin), "should reject: {origin}");
+        }
+    }
+
+    #[test]
+    fn non_http_schemes_are_rejected() {
+        for origin in [
+            "ftp://localhost",
+            "ws://localhost",
+            "wss://localhost",
+            "javascript://localhost",
+            "file://localhost",
+        ] {
+            assert!(!origin_value_is_allowed(origin), "should reject: {origin}");
+        }
+    }
+
+    #[test]
+    fn malformed_origin_is_rejected() {
+        for origin in ["", "localhost", "://localhost", "http://", "http:///path"] {
+            assert!(
+                !origin_value_is_allowed(origin),
+                "should reject malformed: {origin:?}"
+            );
+        }
     }
 }

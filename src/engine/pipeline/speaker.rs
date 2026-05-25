@@ -87,7 +87,9 @@ pub(super) fn build_speaker_tags_with_context(
             continue;
         }
 
-        let Ok((start, end)) = parse_srt_timing_line(&cue.timing) else { continue };
+        let Ok((start, end)) = parse_srt_timing_line(&cue.timing) else {
+            continue;
+        };
 
         if let Some((_, prev_speaker, prev_end)) = last_labeled.as_ref() {
             let gap = start - *prev_end;

@@ -1,0 +1,163 @@
+{
+  "version": "2.0",
+  "kind": "learned-quality-gate",
+  "model_kind": "logistic+isotonic+conformal",
+  "threshold": 0.5,
+  "bias": 3.7694804984289405,
+  "features": [
+    "age",
+    "sex",
+    "systolic_bp",
+    "heart_rate",
+    "oxygen_saturation",
+    "glasgow_coma_scale",
+    "admission_complaint_severity",
+    "comorbidity_count",
+    "peak_lactate_24h",
+    "icu_days",
+    "max_inflammatory_marker",
+    "intubated_within_24h",
+    "max_pressor_dose"
+  ],
+  "mean": [
+    52.48,
+    0.5028571428571429,
+    120.64,
+    86.30857142857143,
+    91.14571428571429,
+    11.637142857142857,
+    3.117142857142857,
+    1.7857142857142858,
+    3.1411142857142846,
+    1.78,
+    7.778600000000001,
+    0.48857142857142855,
+    0.5429428571428573
+  ],
+  "std": [
+    11.929478494169686,
+    0.49999183666805413,
+    12.927781822770017,
+    9.862580694685528,
+    3.9898329973745446,
+    2.1427066613829036,
+    1.6179326693187766,
+    1.1525481972302818,
+    2.2029555896104482,
+    2.5945327132260263,
+    6.333483585335507,
+    0.4998693706910853,
+    0.6877633913265373
+  ],
+  "weights": [
+    0.1057109724978691,
+    0.07304937265306533,
+    -0.06900777429828384,
+    0.04111560118765445,
+    -0.053780360285195394,
+    -0.1356764659451805,
+    0.0007132867792403854,
+    0.0528561792290778,
+    -1.199064012469343,
+    -1.4160730075772356,
+    -1.2875528320360836,
+    -0.5134098772492771,
+    -1.2993692126039242
+  ],
+  "calibration": {
+    "kind": "isotonic",
+    "x": [
+      0.001152481453874389,
+      0.05924491809161525,
+      0.9709716475174871,
+      0.999757069130448
+    ],
+    "y": [
+      0.0,
+      0.0,
+      1.0,
+      1.0
+    ],
+    "out_of_bounds": "clip"
+  },
+  "conformal": {
+    "alpha": 0.1,
+    "q_hat": 0.0,
+    "calibration_set_size": 50,
+    "isotonic_cal_set_size": 50,
+    "split_kind": "disjoint_iso_and_conf",
+    "interpretation": "PASS if p_cal - q_hat > threshold; REJECT if p_cal + q_hat < threshold; ABSTAIN otherwise."
+  },
+  "holdout_metrics": {
+    "crisp_acc": 1.0,
+    "crisp_precision": 1.0,
+    "crisp_recall": 1.0,
+    "crisp_f1": 1.0,
+    "crisp_f1_bootstrap_ci95": [
+      1.0,
+      1.0
+    ],
+    "conformal_test": {
+      "n": 50,
+      "pass": 38,
+      "reject": 12,
+      "abstain": 0,
+      "abstain_rate": 0.0,
+      "coverage": 1.0,
+      "decisive_accuracy": 1.0
+    },
+    "conformal_calibration_selfcheck": {
+      "n": 50,
+      "pass": 38,
+      "reject": 12,
+      "abstain": 0,
+      "abstain_rate": 0.0,
+      "coverage": 1.0,
+      "decisive_accuracy": 1.0
+    },
+    "alpha_sweep": [
+      {
+        "alpha": 0.1,
+        "q_hat": 0.0,
+        "test_coverage": 1.0,
+        "test_abstain_rate": 0.0,
+        "test_decisive_accuracy": 1.0,
+        "test_pass": 38,
+        "test_reject": 12,
+        "test_abstain": 0
+      },
+      {
+        "alpha": 0.3,
+        "q_hat": 0.0,
+        "test_coverage": 1.0,
+        "test_abstain_rate": 0.0,
+        "test_decisive_accuracy": 1.0,
+        "test_pass": 38,
+        "test_reject": 12,
+        "test_abstain": 0
+      },
+      {
+        "alpha": 0.5,
+        "q_hat": 0.0,
+        "test_coverage": 1.0,
+        "test_abstain_rate": 0.0,
+        "test_decisive_accuracy": 1.0,
+        "test_pass": 38,
+        "test_reject": 12,
+        "test_abstain": 0
+      }
+    ]
+  },
+  "holdout_size": 50,
+  "training_seed": 42,
+  "data_sha256": "27e177df98462bf2886b7cb29893b1fcc8ef8d428a399a319ef7ebc6bed3551f",
+  "git_commit": "b41c14aced99cccb20ab9ab7c6c3c443b9b14950",
+  "training_set_size": 350,
+  "exclude_delta_features": false,
+  "feature_audit": {
+    "path": "examples\\f3_case_study_medical\\feature_audit.no_drop.json",
+    "sha256": "e24898093ff31bb68050fe24d27450c1df022d3cdeb50bf428e56d2128f6362f",
+    "flagged_features": [],
+    "leak_threshold": 1.01
+  }
+}

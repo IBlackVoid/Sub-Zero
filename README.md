@@ -1,104 +1,164 @@
-# sub-zero
+# Sub-Zero
 
-offline-first subtitle translator. nothing leaves your machine.
+**offline subtitle engine. nothing leaves your machine. ever.**
 
-three things matter:
-
-- the translation never leaves your machine.
-- the engine is measurable, not hopeful.
-- you can verify every claim it makes with the numbers it emits.
-
-if you do not need those things, you do not need this.
+[![CI](https://github.com/IBlackVoid/Sub-Zero/actions/workflows/ci.yml/badge.svg)](https://github.com/IBlackVoid/Sub-Zero/actions)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 
 ---
 
 ## what it does
 
-reads a media file or an existing `.srt`. transcribes when there is no
-subtitle track. translates with a local NLLB-200 model. runs a learned
-quality gate against the result. emits a sidecar with everything it
-saw so you can audit it.
+takes a video or `.srt` file. transcribes it locally (whisper). translates it
+locally (NLLB-200). runs a quality gate against the result. emits a sidecar
+with every metric it computed so you can audit every claim.
 
-no cloud. no API keys. no telemetry. nothing gets uploaded.
+no cloud. no API keys. no telemetry. no data leaves your machine.
 
-## install
+**in one line:**
 
-prereqs:
-
-- rust toolchain (`rustup default stable`)
-- python 3.10+ for the helper scripts and the fidelity verifier
-- ffmpeg on PATH (transcription + media probing)
-
-build:
-
+```bash
+sub-zero -i movie.mkv --source-lang ja --lang en --gpu --parallel
 ```
+
+output: `movie.en.srt` + `movie.sub-zero.json` (quality audit sidecar).
+
+---
+
+## why this exists
+
+every subtitle tool either:
+- sends your content to a cloud API (privacy violation)
+- gives you zero quality metrics (hope-based engineering)
+- can't scale past a single file without manual babysitting
+
+Sub-Zero does none of that. it runs entirely offline, tells you exactly how
+confident it is, and self-heals when quality drops below the floor.
+
+---
+
+## features
+
+| feature | what it does |
+|---------|-------------|
+| **DOOM-QLOCK** | adaptive runtime scheduler. probes your hardware, picks the optimal plan, learns from history |
+| **parallel chunked transcription** | splits audio at silence boundaries, transcribes in parallel, stitches with overlap dedup |
+| **LFAS (Label-Free Adaptive Scheduling)** | bandit algorithm that minimizes quality regret without requiring ground-truth labels |
+| **C-BHC coverage bound** | provable coverage guarantee via Bretagnolle-Huber inequality |
+| **Rényi-Hellinger sharpening** | tighter coverage bound computed directly from streaming histograms |
+| **learned quality gate** | logistic + isotonic + conformal prediction — PASS/REJECT/ABSTAIN with calibrated confidence |
+| **speaker-aware translation** | per-character voice priors, discourse consistency, register tagging |
+| **character glossary** | persistent name canonicalization across episodes |
+| **scene rescue** | auto-retries low-quality scenes with halved batch size |
+| **live TUI dashboard** | terminal UI with real-time progress, three visual modes, waveform display |
+
+---
+
+## quick start
+
+### install
+
+```bash
 git clone https://github.com/IBlackVoid/Sub-Zero
 cd Sub-Zero
 cargo build --release
 ```
 
 binaries land in `target/release/`:
+- `sub-zero` — the engine CLI
+- `sub-zero-tui` — the live dashboard
 
-- `sub-zero`      — the engine
-- `sub-zero-tui`  — the live dashboard
+### prerequisites
 
-models (one-time, only if you want neural translation):
+- **Rust** 1.75+ (`rustup default stable`)
+- **ffmpeg** on PATH (audio extraction + media probing)
+- **Python 3.10+** with `openai-whisper` installed (transcription backend)
+- (optional) **whisper.cpp** binary for 5-10x faster transcription
+- (optional) **NLLB-200** in CTranslate2 format for neural translation
 
-- NLLB-200 in CTranslate2 format → `models/nllb/`
-- (optional) whisper.cpp binary + ggml model for transcription
+### first run
 
-without NLLB, the engine falls back to a phrase-table backend for
-the language pairs it knows about. enough to smoke-test the pipeline.
+```bash
+# transcribe + translate a video (GPU accelerated)
+sub-zero -i video.mp4 --source-lang ja --lang en --gpu --parallel
 
-## run
+# just transcribe english audio
+sub-zero -i podcast.mp4 --source-lang en --lang en --gpu
+
+# translate an existing SRT
+sub-zero -i existing.ja.srt --lang en
+
+# fire up the dashboard
+sub-zero-tui
+```
+
+### models (one-time setup)
+
+```bash
+# whisper model (auto-downloaded by openai-whisper on first run)
+pip install openai-whisper
+
+# NLLB-200 for neural translation (optional)
+./scripts/release/bootstrap_models.sh
+```
+
+without NLLB, falls back to a phrase-table backend. enough to smoke-test.
+
+---
+
+## how it works
 
 ```
-sub-zero -i clip.mkv --lang en
+video.mkv
+    │
+    ├─── ffmpeg extract audio ──► mono 16kHz WAV
+    │
+    ├─── SBOD chunking ──► split at silence gaps (never mid-sentence)
+    │
+    ├─── parallel whisper (1 GPU worker, full VRAM) ──► per-chunk SRTs
+    │
+    ├─── stitcher ──► merge + Levenshtein dedup at boundaries
+    │
+    ├─── coverage gate ──► verify all chunks produced output
+    │
+    ├─── neural MT (NLLB-200) ──► batched translation with quality floor
+    │
+    ├─── post-processing ──► discourse consistency, scene rescue, compaction
+    │
+    ├─── quality gate ──► structural + semantic + learned gate
+    │
+    └─── output: video.en.srt + video.sub-zero.json (audit sidecar)
 ```
 
-a `clip.en.srt` appears next to the input. a sidecar
-`clip.sub-zero.json` next to it carries every gate score, every
-recovery event, every chunk timing.
-
-a few of the flags that matter:
-
-```
---source-lang ja           source language (default ja)
---lang en                  target language (default en)
---profile strict           fast | balanced | strict
---parallel --workers 8     chunked transcription, N workers
---gpu                      use CUDA when available
---speaker-aware            learn per-character voice priors
---trace-runtime            emit a per-stage timing sidecar
---verify                   check the output against the audio
-```
+---
 
 ## the dashboard
 
-```
+```bash
 cargo run -p sub-zero-tui --release
 ```
 
-a live terminal dashboard. shows the pipeline as it runs, the cues as
-they translate, and the per-character voice priors the engine learns.
-press `:` for commands. press `:help` for the rest.
+a live terminal dashboard. shows the pipeline as it runs, cues as they
+translate, per-character voice priors the engine learns.
 
-three running-screen modes, cycle with `g`:
+three running-screen modes (cycle with `g`):
+- **original** — the pre-recorded braille animation
+- **emerge** — reveals cell-by-cell as chunks complete
+- **generative** — flow-field particle system, fresh artwork per run
 
-- **original** — the pre-recorded animation plays.
-- **emerge** — the same animation reveals itself cell-by-cell as
-  chunks complete. deterministic per input filename — same file, same
-  reveal pattern.
-- **generative** — a flow-field particle system. fresh artwork per
-  run. each chunk completion injects a particle burst.
+keybinds: `Enter` pick file, `r` re-run, `p` cycle profile, `g` cycle
+visual, `Tab` path completion, `:help` full reference.
 
-## audit
+---
 
-every claim this thing makes is checkable. the fidelity bound is the
-empirical mutual information between machine and reference, estimated
-with a Kraskov k-NN estimator (numpy only, no torch):
+## quality metrics
 
-```
+every claim is checkable. the fidelity bound is the empirical mutual
+information between machine and reference, estimated with a Kraskov
+k-NN estimator:
+
+```bash
 python scripts/quality_gate/verify_fidelity_bound.py \
   --machine  out.en.srt \
   --baseline baseline.en.srt \
@@ -106,70 +166,105 @@ python scripts/quality_gate/verify_fidelity_bound.py \
   --strict
 ```
 
-on a real Japanese-language corpus (998 aligned cues from a JP gameplay
-stream, with a separately-sourced human reference):
+real-corpus results (998 aligned cues, JP gameplay stream, human reference):
 
-| metric                                | value                |
-|---------------------------------------|----------------------|
-| I(machine ; reference)                | 0.6985 nats          |
-| I(per-cue baseline ; reference)       | 0.2282 nats          |
-| Δ̂ — fidelity gap vs per-cue baseline | **+0.4703 nats**     |
-| name inconsistency ratio (full ep)    | 0.00 %               |
-| adjacent repeat ratio                 | 0.37 %               |
-| scene low-quality ratio               | 1.13 %               |
+| metric | value |
+|--------|-------|
+| I(machine ; reference) | **0.6985 nats** |
+| I(baseline ; reference) | 0.2282 nats |
+| fidelity gap | **+0.4703 nats** (3x the mutual information) |
+| name inconsistency | 0.00% |
+| adjacent repeats | 0.37% |
+| scene low-quality | 1.13% |
 
-three-times the mutual information. real corpus. real reference.
+---
 
-## the bits worth reading
+## the theory (for the curious)
 
-```
-src/engine/                          translator + pipeline + DOOM-QLOCK
-src/engine/voice_consistency.rs      per-character voice priors
-src/engine/character_glossary.rs     persistent name canonicalisation
-src/engine/postprocess.rs            reading-rate cap + scene rescue
-scripts/quality_gate/                fidelity verifier + learned gate
-scripts/tui/braille_convert.py       video → braille animation
-tui/src/                             ratatui dashboard
-```
+Sub-Zero ships four original theorems that compose published results into
+something that didn't exist before:
 
-## first-run smoke (5 minutes from clean clone)
+1. **Theorem 1 (F.3 Regret)**: UCB-Bernstein with counterfactual MI as
+   label-free reward signal — sublinear regret without ground truth.
 
-```
-cargo build --release
-cargo test
-```
+2. **Theorem 2 (Coverage-Regret Transfer)**: Jensen on C-BHC's concave
+   transfer function converts bandit regret to conformal coverage regret.
+   No published result connects these.
 
-both should pass with zero failures. then either:
+3. **Theorem 3 (Coverage Floor)**: anytime production coverage guarantee
+   that strengthens with every processed file.
 
-```
-# pipe an existing SRT through the post-process + verifier path:
-./target/release/sub-zero -i mysrt.ja.srt --lang en --phrase-table
+4. **Theorem 4 (Rényi-Hellinger Sharpening)**: when H² < 1−exp(−KL/2),
+   the Hellinger penalty `H·√(2−H²)` is strictly tighter than the standard
+   C-BHC bound — computed from the same histograms at zero extra cost.
 
-# or fire up the dashboard:
-./target/release/sub-zero-tui
-```
+see `docs/F4_lfas.md` for the full proofs, worked examples, and prior art audit.
 
-inside the dashboard:
+---
+
+## CLI reference
 
 ```
-Enter   pick an input file
-r       re-run the most-recent input
-p       cycle quality profile
-Tab     path completion in the picker
-:help   keybind reference
-g       cycle running-screen visual mode
-s       on Result: save the output to a custom location
+sub-zero -i <file> [options]
+
+Core:
+  --source-lang <code>    source language (default: ja)
+  -l, --lang <code>       target language (default: en)
+  --profile <name>        fast | balanced | strict
+  --gpu                   use CUDA when available
+  --offline               offline-only backends
+
+Speed:
+  --parallel              parallel chunked transcription
+  --stream                progressive output (chunk-by-chunk)
+  --workers <N>           max whisper workers (auto-capped for GPU VRAM)
+  --chunk-duration <sec>  target chunk size (default: 300)
+
+Quality:
+  --speaker-aware         per-character voice priors + discourse consistency
+  --speaker-diarize       audio-based speaker diarization
+  --verify                check output timing against audio VAD
+  --trace-runtime         emit per-stage timing sidecar
+  --lfas-control          let LFAS override DOOM-QLOCK's plan selection
+
+Backends:
+  --whisper-bin <path>    path to whisper.cpp binary (fastest)
+  --whisper-model <path>  path to GGML model file
+  --mt-model <name>       neural MT model override
+  --phrase-table          skip neural MT, use phrase-table fallback
 ```
+
+---
+
+## project structure
+
+```
+src/engine/              the pipeline + DOOM-QLOCK + quality gates
+src/engine/lfas.rs       LFAS scheduler (4 theorems, 218 tests)
+src/engine/f3_stream.rs  streaming MI + Hellinger estimator
+src/engine/parallel.rs   chunked transcription worker pool
+src/engine/pipeline.rs   dual-path convergence orchestrator
+tui/src/                 ratatui dashboard
+scripts/                 benchmarks, model bootstrap, quality verifier
+docs/                    formal theorems, architecture, ADRs
+```
+
+---
 
 ## status
 
-182 tests pass (151 engine + 31 dashboard). clippy clean. release
-build clean. CI on Linux, macOS, Windows.
+218 tests. zero clippy warnings. CI on Linux, macOS, Windows.
+supply-chain gates via `cargo-deny` and `cargo-audit`.
 
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --locked
+cargo deny check
+cargo audit
 ```
-cargo test
-cargo clippy --no-deps -- -W clippy::or_fun_call -W clippy::manual_let_else
-```
+
+---
 
 ## license
 
@@ -177,4 +272,4 @@ MIT.
 
 ---
 
-control is an illusion. determinism isn't.
+*control is an illusion. determinism isn't.*

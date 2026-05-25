@@ -27,8 +27,7 @@ impl Prefs {
         if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
             return Some(PathBuf::from(home).join("tui.json"));
         }
-        let home = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))?;
+        let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
         Some(PathBuf::from(home).join(".sub-zero").join("tui.json"))
     }
 
@@ -43,7 +42,9 @@ impl Prefs {
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        let Some(p) = Self::path() else { return Ok(()); };
+        let Some(p) = Self::path() else {
+            return Ok(());
+        };
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;
         }

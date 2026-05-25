@@ -402,7 +402,9 @@ fn process_file_emits_voice_consistency_sidecar() {
     })
     .expect("pipeline should build");
 
-    pipeline.process_input(&source).expect("process should succeed");
+    pipeline
+        .process_input(&source)
+        .expect("process should succeed");
     let metadata = dir.join("sample.sub-zero.json");
     let metadata_text = fs::read_to_string(&metadata).expect("metadata sidecar should exist");
     let metadata_json: serde_json::Value =
