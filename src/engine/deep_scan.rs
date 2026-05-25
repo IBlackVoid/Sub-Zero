@@ -42,25 +42,16 @@ pub struct DeepScanConfig {
     pub vad_pad: f64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DeepScanError {
-    Scan { source: String },
+    #[error("deep scan failed: {message}")]
+    Scan { message: String },
 }
 
 pub type DeepScanResult<T> = Result<T, DeepScanError>;
 
-impl std::fmt::Display for DeepScanError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Scan { source } => write!(f, "deep scan failed: {source}"),
-        }
-    }
-}
-
-impl std::error::Error for DeepScanError {}
-
 pub fn scan_input(input: &Path, config: DeepScanConfig) -> DeepScanResult<ContentMap> {
-    scan_input_inner(input, config).map_err(|source| DeepScanError::Scan { source })
+    scan_input_inner(input, config).map_err(|message| DeepScanError::Scan { message })
 }
 
 fn scan_input_inner(input: &Path, config: DeepScanConfig) -> Result<ContentMap, String> {

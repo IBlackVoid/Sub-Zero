@@ -50,7 +50,12 @@ impl CharacterGlossary {
                 if clean.len() < MIN_NAME_LENGTH {
                     continue;
                 }
-                if !clean.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                if !clean
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+                {
                     continue;
                 }
                 *freq.entry(clean.to_string()).or_insert(0) += 1;
@@ -77,15 +82,16 @@ impl CharacterGlossary {
                 }
             }
             if !absorbed {
-                self.seen_variants
-                    .insert(word.clone(), vec![word.clone()]);
+                self.seen_variants.insert(word.clone(), vec![word.clone()]);
                 self.variants.insert(word.clone(), word.clone());
             }
         }
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        let Some(p) = Self::path() else { return Ok(()); };
+        let Some(p) = Self::path() else {
+            return Ok(());
+        };
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -100,9 +106,12 @@ impl CharacterGlossary {
         if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
             return Some(PathBuf::from(home).join("character_glossary.json"));
         }
-        let home = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))?;
-        Some(PathBuf::from(home).join(".sub-zero").join("character_glossary.json"))
+        let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+        Some(
+            PathBuf::from(home)
+                .join(".sub-zero")
+                .join("character_glossary.json"),
+        )
     }
 }
 
@@ -135,17 +144,19 @@ fn levenshtein(a: &str, b: &str) -> usize {
     let bv: Vec<char> = b.chars().take(16).collect();
     let m = av.len();
     let n = bv.len();
-    if m == 0 { return n; }
-    if n == 0 { return m; }
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
     let mut prev: Vec<usize> = (0..=n).collect();
     let mut cur: Vec<usize> = vec![0; n + 1];
     for i in 1..=m {
         cur[0] = i;
         for j in 1..=n {
             let cost = if av[i - 1] == bv[j - 1] { 0 } else { 1 };
-            cur[j] = (prev[j] + 1)
-                .min(cur[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut cur);
     }
@@ -186,7 +197,8 @@ mod tests {
     #[test]
     fn apply_canonicalises_known_variant() {
         let mut g = CharacterGlossary::default();
-        g.variants.insert("Konozuka".to_string(), "Konatsu".to_string());
+        g.variants
+            .insert("Konozuka".to_string(), "Konatsu".to_string());
         let mut cues = vec![cue("Hello, Konozuka.")];
         g.apply(&mut cues);
         assert_eq!(cues[0].text, "Hello, Konatsu.");
@@ -195,7 +207,8 @@ mod tests {
     #[test]
     fn apply_preserves_unknown_words() {
         let mut g = CharacterGlossary::default();
-        g.variants.insert("Konozuka".to_string(), "Konatsu".to_string());
+        g.variants
+            .insert("Konozuka".to_string(), "Konatsu".to_string());
         let mut cues = vec![cue("The dog runs fast.")];
         g.apply(&mut cues);
         assert_eq!(cues[0].text, "The dog runs fast.");
