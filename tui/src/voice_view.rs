@@ -34,14 +34,21 @@ pub fn priors_path() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
         return Some(PathBuf::from(home).join("voice_priors.json"));
     }
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))?;
-    Some(PathBuf::from(home).join(".sub-zero").join("voice_priors.json"))
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    Some(
+        PathBuf::from(home)
+            .join(".sub-zero")
+            .join("voice_priors.json"),
+    )
 }
 
 pub fn load() -> Vec<SpeakerSignature> {
-    let Some(path) = priors_path() else { return Vec::new() };
-    let Ok(text) = std::fs::read_to_string(&path) else { return Vec::new() };
+    let Some(path) = priors_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
     let Ok(file): Result<VoicePriorsFile, _> = serde_json::from_str(&text) else {
         return Vec::new();
     };

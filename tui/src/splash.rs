@@ -20,8 +20,7 @@ const TAGLINE: &str = "offline-first subtitle translator · F.2 information-bott
 
 pub fn render(f: &mut Frame, area: Rect, started_at: Instant, accent: Color) {
     let elapsed = started_at.elapsed();
-    let frac = (elapsed.as_secs_f32() / SPLASH_DURATION.as_secs_f32())
-        .clamp(0.0, 1.0);
+    let frac = (elapsed.as_secs_f32() / SPLASH_DURATION.as_secs_f32()).clamp(0.0, 1.0);
     let intensity = 1.0 - (1.0 - frac).powi(2);
     let alpha = (intensity * 255.0) as u8;
     let logo_color = scale_color(accent, alpha);

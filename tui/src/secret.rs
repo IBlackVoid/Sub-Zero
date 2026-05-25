@@ -1,116 +1,255 @@
-//! Hidden-content gate. Source never holds plaintext — only digests.
+//! Authenticated hidden-content envelopes.
+//!
+//! The shipped binary does not contain unlock digests or plaintext assets.
+//! A phrase is used only to derive a slot key for the encrypted manifest;
+//! asset blobs then decrypt with that key.
 
+use argon2::{Algorithm, Argon2, Params, Version};
+use chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    ChaCha20Poly1305, Key, Nonce,
+};
 use sha2::{Digest, Sha256};
+use std::io::{Error, ErrorKind};
 use std::path::Path;
+use zeroize::Zeroize;
 
-const KEY_SALT: &[u8] = b"\x00sub-zero-easter-v1";
+const MANIFEST_MAGIC: &[u8; 8] = b"SZEE2M\0\0";
+const ASSET_MAGIC: &[u8; 8] = b"SZEE2A\0\0";
+const LEGACY_KEY_SALT: &[u8] = b"\x00sub-zero-easter-v1";
+const SALT_LEN: usize = 16;
+const NONCE_LEN: usize = 12;
+const KEY_LEN: usize = 32;
 
-pub fn digest_of(phrase: &str) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(phrase.as_bytes());
-    h.finalize().into()
+#[cfg(not(test))]
+const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
+#[cfg(test)]
+const ARGON2_MEMORY_KIB: u32 = 64;
+const ARGON2_PASSES: u32 = 3;
+const ARGON2_LANES: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecretFormat {
+    V2,
+    LegacyXor,
 }
 
-pub fn digests_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    let mut diff = 0u8;
-    for i in 0..32 {
-        diff |= a[i] ^ b[i];
+pub struct SecretKey {
+    bytes: [u8; KEY_LEN],
+    format: SecretFormat,
+}
+
+impl SecretKey {
+    fn cipher(&self) -> ChaCha20Poly1305 {
+        ChaCha20Poly1305::new(Key::from_slice(&self.bytes))
     }
-    diff == 0
 }
 
-pub fn verify(phrase: &str, expected: &[u8; 32]) -> bool {
-    digests_eq(&digest_of(phrase), expected)
+impl std::fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretKey")
+            .field("format", &self.format)
+            .field("bytes", &"<redacted>")
+            .finish()
+    }
 }
 
-pub fn derive_key(phrase: &str) -> [u8; 32] {
+impl Drop for SecretKey {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
+}
+
+pub fn decrypt_manifest_file(path: &Path, phrase: &str) -> std::io::Result<(Vec<u8>, SecretKey)> {
+    let data = std::fs::read(path)?;
+    decrypt_manifest(&data, phrase)
+}
+
+pub fn decrypt_asset_file(path: &Path, key: &SecretKey) -> std::io::Result<Vec<u8>> {
+    let data = std::fs::read(path)?;
+    decrypt_asset(&data, key)
+}
+
+fn decrypt_manifest(data: &[u8], phrase: &str) -> std::io::Result<(Vec<u8>, SecretKey)> {
+    if !data.starts_with(MANIFEST_MAGIC) {
+        let key = derive_legacy_key(phrase);
+        let plaintext = legacy_xor(data, &key.bytes);
+        return Ok((plaintext, key));
+    }
+
+    let min_len = MANIFEST_MAGIC.len() + SALT_LEN + NONCE_LEN;
+    if data.len() <= min_len {
+        return Err(invalid_data("invalid hidden manifest envelope"));
+    }
+
+    let salt_start = MANIFEST_MAGIC.len();
+    let nonce_start = salt_start + SALT_LEN;
+    let ciphertext_start = nonce_start + NONCE_LEN;
+    let salt = &data[salt_start..nonce_start];
+    let nonce = &data[nonce_start..ciphertext_start];
+    let ciphertext = &data[ciphertext_start..];
+
+    let key = derive_key(phrase, salt)?;
+    let plaintext = decrypt_with_key(&key, nonce, ciphertext)?;
+    Ok((plaintext, key))
+}
+
+fn decrypt_asset(data: &[u8], key: &SecretKey) -> std::io::Result<Vec<u8>> {
+    if key.format == SecretFormat::LegacyXor {
+        return Ok(legacy_xor(data, &key.bytes));
+    }
+
+    let min_len = ASSET_MAGIC.len() + NONCE_LEN;
+    if data.len() <= min_len || &data[..ASSET_MAGIC.len()] != ASSET_MAGIC {
+        return Err(invalid_data("invalid hidden asset envelope"));
+    }
+
+    let nonce_start = ASSET_MAGIC.len();
+    let ciphertext_start = nonce_start + NONCE_LEN;
+    let nonce = &data[nonce_start..ciphertext_start];
+    let ciphertext = &data[ciphertext_start..];
+    decrypt_with_key(key, nonce, ciphertext)
+}
+
+fn derive_key(phrase: &str, salt: &[u8]) -> std::io::Result<SecretKey> {
+    let params = Params::new(
+        ARGON2_MEMORY_KIB,
+        ARGON2_PASSES,
+        ARGON2_LANES,
+        Some(KEY_LEN),
+    )
+    .map_err(|error| invalid_data(format!("invalid Argon2 parameters: {error}")))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+
+    let mut key = [0u8; KEY_LEN];
+    if let Err(error) = argon2.hash_password_into(phrase.as_bytes(), salt, &mut key) {
+        key.zeroize();
+        return Err(invalid_data(format!(
+            "Argon2 key derivation failed: {error}"
+        )));
+    }
+    Ok(SecretKey {
+        bytes: key,
+        format: SecretFormat::V2,
+    })
+}
+
+fn decrypt_with_key(key: &SecretKey, nonce: &[u8], ciphertext: &[u8]) -> std::io::Result<Vec<u8>> {
+    key.cipher()
+        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .map_err(|_| invalid_data("hidden asset authentication failed"))
+}
+
+fn derive_legacy_key(phrase: &str) -> SecretKey {
     let mut h = Sha256::new();
     h.update(phrase.as_bytes());
-    h.update(KEY_SALT);
-    h.finalize().into()
+    h.update(LEGACY_KEY_SALT);
+    SecretKey {
+        bytes: h.finalize().into(),
+        format: SecretFormat::LegacyXor,
+    }
 }
 
-pub fn xor_stream(data: &mut [u8], key: &[u8; 32]) {
-    let mut counter: u64 = 0;
-    let mut offset = 0;
-    while offset < data.len() {
+fn legacy_xor(data: &[u8], key: &[u8; KEY_LEN]) -> Vec<u8> {
+    let mut out = data.to_vec();
+    let mut counter = 0u64;
+    let mut offset = 0usize;
+
+    while offset < out.len() {
         let mut h = Sha256::new();
         h.update(key);
         h.update(counter.to_le_bytes());
-        let block: [u8; 32] = h.finalize().into();
-        let take = (data.len() - offset).min(32);
+        let block: [u8; KEY_LEN] = h.finalize().into();
+        let take = (out.len() - offset).min(KEY_LEN);
         for i in 0..take {
-            data[offset + i] ^= block[i];
+            out[offset + i] ^= block[i];
         }
         offset += take;
         counter = counter.wrapping_add(1);
     }
+
+    out
 }
 
-pub fn decrypt_file(path: &Path, phrase: &str) -> std::io::Result<Vec<u8>> {
-    let mut data = std::fs::read(path)?;
-    let key = derive_key(phrase);
-    xor_stream(&mut data, &key);
-    Ok(data)
+fn invalid_data(message: impl Into<String>) -> Error {
+    Error::new(ErrorKind::InvalidData, message.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn digest_is_deterministic() {
-        assert_eq!(digest_of("hello"), digest_of("hello"));
-        assert_ne!(digest_of("hello"), digest_of("Hello"));
+    fn encrypt_manifest_for_test(phrase: &str, plaintext: &[u8]) -> Vec<u8> {
+        let salt = [7u8; SALT_LEN];
+        let nonce = [9u8; NONCE_LEN];
+        let key = derive_key(phrase, &salt).expect("test key should derive");
+        let ciphertext = key
+            .cipher()
+            .encrypt(Nonce::from_slice(&nonce), plaintext)
+            .expect("test encrypt should succeed");
+
+        let mut out = Vec::new();
+        out.extend_from_slice(MANIFEST_MAGIC);
+        out.extend_from_slice(&salt);
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ciphertext);
+        out
+    }
+
+    fn encrypt_asset_for_test(key: &SecretKey, plaintext: &[u8]) -> Vec<u8> {
+        let nonce = [11u8; NONCE_LEN];
+        let ciphertext = key
+            .cipher()
+            .encrypt(Nonce::from_slice(&nonce), plaintext)
+            .expect("test encrypt should succeed");
+
+        let mut out = Vec::new();
+        out.extend_from_slice(ASSET_MAGIC);
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ciphertext);
+        out
+    }
+
+    fn encrypt_legacy_for_test(phrase: &str, plaintext: &[u8]) -> Vec<u8> {
+        let key = derive_legacy_key(phrase);
+        legacy_xor(plaintext, &key.bytes)
     }
 
     #[test]
-    fn xor_stream_round_trip() {
-        let key = derive_key("test phrase");
-        let original = b"The quick brown fox jumps over the lazy dog.".to_vec();
-        let mut encrypted = original.clone();
-        xor_stream(&mut encrypted, &key);
-        assert_ne!(encrypted, original);
-        let mut decrypted = encrypted.clone();
-        xor_stream(&mut decrypted, &key);
-        assert_eq!(decrypted, original);
+    fn manifest_unlock_derives_asset_key() {
+        let envelope = encrypt_manifest_for_test("correct horse", b"{\"items\":[]}");
+        let (manifest, key) = decrypt_manifest(&envelope, "correct horse").expect("unlock");
+        assert_eq!(manifest, b"{\"items\":[]}");
+
+        let asset = encrypt_asset_for_test(&key, b"secret asset");
+        let plaintext = decrypt_asset(&asset, &key).expect("asset decrypt");
+        assert_eq!(plaintext, b"secret asset");
     }
 
     #[test]
-    fn wrong_phrase_does_not_decrypt() {
-        let mut data = b"secret manifest contents".to_vec();
-        xor_stream(&mut data, &derive_key("correct"));
-        let copy = data.clone();
-        let mut wrong_try = data;
-        xor_stream(&mut wrong_try, &derive_key("incorrect"));
-        assert_ne!(&wrong_try, b"secret manifest contents");
-        assert_ne!(wrong_try, copy);
+    fn wrong_phrase_rejects_manifest() {
+        let envelope = encrypt_manifest_for_test("correct horse", b"secret manifest");
+        assert!(decrypt_manifest(&envelope, "wrong horse").is_err());
     }
 
     #[test]
-    fn verify_accepts_match_rejects_others() {
-        let d = digest_of("opensesame");
-        assert!(verify("opensesame", &d));
-        assert!(!verify("OpenSesame", &d));
-        assert!(!verify("", &d));
+    fn tampered_asset_rejects_authentication() {
+        let envelope = encrypt_manifest_for_test("correct horse", b"manifest");
+        let (_, key) = decrypt_manifest(&envelope, "correct horse").expect("unlock");
+        let mut asset = encrypt_asset_for_test(&key, b"secret asset");
+        let last = asset.last_mut().expect("ciphertext byte");
+        *last ^= 0x55;
+        assert!(decrypt_asset(&asset, &key).is_err());
     }
 
     #[test]
-    fn digests_eq_is_constant_time_correct() {
-        let a = digest_of("a");
-        let b = digest_of("a");
-        let c = digest_of("b");
-        assert!(digests_eq(&a, &b));
-        assert!(!digests_eq(&a, &c));
-    }
+    fn legacy_xor_manifest_and_asset_still_unlock() {
+        let envelope = encrypt_legacy_for_test("old phrase", b"{\"items\":[]}");
+        let (manifest, key) = decrypt_manifest(&envelope, "old phrase").expect("legacy unlock");
+        assert_eq!(manifest, b"{\"items\":[]}");
 
-    #[test]
-    fn long_buffer_decrypts_correctly() {
-        let key = derive_key("counter rollover test");
-        let original: Vec<u8> = (0..1024u32).map(|i| (i & 0xff) as u8).collect();
-        let mut buf = original.clone();
-        xor_stream(&mut buf, &key);
-        xor_stream(&mut buf, &key);
-        assert_eq!(buf, original);
+        let asset = encrypt_legacy_for_test("old phrase", b"legacy asset");
+        let plaintext = decrypt_asset(&asset, &key).expect("legacy asset decrypt");
+        assert_eq!(plaintext, b"legacy asset");
     }
 }
