@@ -1,16 +1,19 @@
 //! sub-zero-tui — entry point.
 
+mod accessibility;
 mod animation;
 mod app;
 mod audio;
-mod digests;
 mod easter_egg;
 mod engine;
+mod paths;
 mod prefs;
 mod recents;
-mod secret;
 mod runner_viz;
+mod secret;
+mod slots;
 mod splash;
+mod theme;
 mod voice_view;
 mod waveform;
 

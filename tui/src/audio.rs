@@ -77,10 +77,6 @@ impl AudioPlayer {
         self.sink.as_ref().map(|s| !s.empty()).unwrap_or(false)
     }
 
-    pub fn current_path(&self) -> Option<&Path> {
-        self.current_path.as_deref()
-    }
-
     pub fn volume(&self) -> f32 {
         self.volume
     }

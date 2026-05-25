@@ -68,17 +68,17 @@ pub struct HiddenManifest {
     pub items: Vec<HiddenItem>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct UnlockedSlot {
     pub dir: PathBuf,
     pub manifest: HiddenManifest,
-    pub phrase: String,
+    key: secret::SecretKey,
 }
 
 impl UnlockedSlot {
     pub fn decrypt_index(&self, index: u32) -> std::io::Result<Vec<u8>> {
         let path = self.dir.join(format!("{index}.bin"));
-        secret::decrypt_file(&path, &self.phrase)
+        secret::decrypt_asset_file(&path, &self.key)
     }
 }
 
@@ -87,12 +87,12 @@ pub fn try_unlock(dir: &Path, phrase: &str) -> Option<UnlockedSlot> {
     if !manifest_path.is_file() {
         return None;
     }
-    let bytes = secret::decrypt_file(&manifest_path, phrase).ok()?;
+    let (bytes, key) = secret::decrypt_manifest_file(&manifest_path, phrase).ok()?;
     let manifest: HiddenManifest = serde_json::from_slice(&bytes).ok()?;
     Some(UnlockedSlot {
         dir: dir.to_path_buf(),
         manifest,
-        phrase: phrase.to_string(),
+        key,
     })
 }
 
@@ -122,7 +122,8 @@ impl EasterEgg {
         self.boss = !self.boss;
     }
 
-    pub fn toggle_panel(&mut self) {
+    #[cfg(test)]
+    fn toggle_panel(&mut self) {
         if self.panel.is_some() {
             self.panel_open = !self.panel_open;
         }

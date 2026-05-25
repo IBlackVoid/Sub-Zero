@@ -67,6 +67,7 @@ pub struct EngineState {
     pub stages_complete: Vec<String>,
     pub chunk_current: u32,
     pub chunk_total: u32,
+    pub cue_count: Option<u32>,
     pub eta_secs: Option<f64>,
     pub quality: Option<f64>,
     pub log: VecDeque<String>,
@@ -127,7 +128,7 @@ impl EngineState {
 pub struct EngineConfig {
     pub source_lang: String,
     pub target_lang: String,
-    pub profile: String,    // fast | balanced | strict
+    pub profile: String, // fast | balanced | strict
     pub gpu: bool,
     pub workers: u32,
 }
@@ -160,38 +161,41 @@ impl EngineRunner {
     /// Spawn the engine on `input_path` with the supplied config.
     /// Events go to a sibling temp file we own; the path is in
     /// `events_path` for inspection.
-    pub fn spawn(
-        engine_exe: &Path,
-        input_path: &Path,
-        config: &EngineConfig,
-    ) -> io::Result<Self> {
+    pub fn spawn(engine_exe: &Path, input_path: &Path, config: &EngineConfig) -> io::Result<Self> {
         let events_path = events_temp_path(input_path);
         // Truncate any prior events file from a previous run.
         let _ = fs::write(&events_path, b"");
 
         let mut cmd = Command::new(engine_exe);
         cmd.arg(input_path)
-            .arg("--source-lang").arg(&config.source_lang)
-            .arg("--lang").arg(&config.target_lang)
+            .arg("--source-lang")
+            .arg(&config.source_lang)
+            .arg("--lang")
+            .arg(&config.target_lang)
             .arg("--offline")
             .arg("--transcribe")
-            .arg("--workers").arg(config.workers.to_string())
+            .arg("--workers")
+            .arg(config.workers.to_string())
             .arg("--mt-force-cpu")
             .arg("--mt-no-quality-floor")
-            .arg("--profile").arg(&config.profile)
-            .arg("--events-file").arg(&events_path)
+            .arg("--profile")
+            .arg(&config.profile)
+            .arg("--events-file")
+            .arg(&events_path)
             .arg("--events-json");
         if config.gpu {
             cmd.arg("--gpu");
         }
         cmd.stdin(Stdio::null())
-           .stdout(Stdio::null())
-           .stderr(Stdio::null());
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
 
         let child = cmd.spawn()?;
-        let mut state = EngineState::default();
-        state.started_at = Some(Instant::now());
-        state.anim_state = "running";
+        let state = EngineState {
+            started_at: Some(Instant::now()),
+            anim_state: "running",
+            ..Default::default()
+        };
         Ok(Self {
             child: Some(child),
             events_path,
@@ -277,6 +281,12 @@ impl EngineRunner {
         if let Some(msg) = ev.message.as_deref() {
             self.state.last_message = Some(msg.to_string());
         }
+        if let Some(eta_secs) = ev.eta_secs {
+            self.state.eta_secs = Some(eta_secs.max(0.0));
+        }
+        if let Some(cues) = ev.cues {
+            self.state.cue_count = Some(cues);
+        }
 
         match ev.event.as_str() {
             "input_start" => {
@@ -295,23 +305,37 @@ impl EngineRunner {
                     // the live telemetry panel.
                     if s == "voice_consistency" {
                         if let Some(d) = ev.details.as_ref() {
-                            self.state.voice_mean_deviation =
-                                d.get("mean_deviation").and_then(|v| v.as_f64()).map(|v| v as f32);
-                            self.state.voice_p95_deviation =
-                                d.get("p95_deviation").and_then(|v| v.as_f64()).map(|v| v as f32);
-                            self.state.voice_max_deviation =
-                                d.get("max_deviation").and_then(|v| v.as_f64()).map(|v| v as f32);
-                            self.state.voice_speakers_observed =
-                                d.get("speakers_observed").and_then(|v| v.as_u64()).map(|v| v as u32);
-                            self.state.voice_cues_scored =
-                                d.get("cues_scored").and_then(|v| v.as_u64()).map(|v| v as u32);
+                            self.state.voice_mean_deviation = d
+                                .get("mean_deviation")
+                                .and_then(|v| v.as_f64())
+                                .map(|v| v as f32);
+                            self.state.voice_p95_deviation = d
+                                .get("p95_deviation")
+                                .and_then(|v| v.as_f64())
+                                .map(|v| v as f32);
+                            self.state.voice_max_deviation = d
+                                .get("max_deviation")
+                                .and_then(|v| v.as_f64())
+                                .map(|v| v as f32);
+                            self.state.voice_speakers_observed = d
+                                .get("speakers_observed")
+                                .and_then(|v| v.as_u64())
+                                .map(|v| v as u32);
+                            self.state.voice_cues_scored = d
+                                .get("cues_scored")
+                                .and_then(|v| v.as_u64())
+                                .map(|v| v as u32);
                         }
                     }
                 }
             }
             "chunk_start" | "chunk_started" => {
-                if let Some(c) = ev.chunk_index { self.state.chunk_current = c.saturating_add(1); }
-                if let Some(t) = ev.chunk_total { self.state.chunk_total = t; }
+                if let Some(c) = ev.chunk_index {
+                    self.state.chunk_current = c.saturating_add(1);
+                }
+                if let Some(t) = ev.chunk_total {
+                    self.state.chunk_total = t;
+                }
                 self.state.current_stage = Some("transcribe".into());
             }
             "asr_complete" => {
@@ -328,9 +352,15 @@ impl EngineRunner {
                 self.state.flash("warning", Duration::from_millis(700));
             }
             "chunk_complete" => {
-                if let Some(c) = ev.chunk_index { self.state.chunk_current = c.saturating_add(1); }
-                if let Some(t) = ev.chunk_total { self.state.chunk_total = t; }
-                if let Some(q) = ev.health_score { self.state.quality = Some(q); }
+                if let Some(c) = ev.chunk_index {
+                    self.state.chunk_current = c.saturating_add(1);
+                }
+                if let Some(t) = ev.chunk_total {
+                    self.state.chunk_total = t;
+                }
+                if let Some(q) = ev.health_score {
+                    self.state.quality = Some(q);
+                }
                 // Record completion timestamp for the telemetry
                 // throughput sparkline. Keep the queue bounded so it
                 // stays cheap to scan even across long runs.
@@ -404,35 +434,48 @@ fn events_temp_path(input: &Path) -> PathBuf {
 /// readable without dumping the whole JSON payload.
 fn format_event_summary(ev: &EngineEvent) -> String {
     match ev.event.as_str() {
-        "input_start" => format!("input_start: {}",
-            ev.input.clone().unwrap_or_default()),
-        "input_complete" => format!("input_complete: {} ({:.1}s)",
+        "input_start" => format!("input_start: {}", ev.input.clone().unwrap_or_default()),
+        "input_complete" => format!(
+            "input_complete: {} ({:.1}s)",
             ev.output.clone().unwrap_or_default(),
-            ev.elapsed_secs.unwrap_or(0.0)),
-        "stage_complete" => format!("stage_complete: {} ({:.1}s)",
+            ev.elapsed_secs.unwrap_or(0.0)
+        ),
+        "stage_complete" => format!(
+            "stage_complete: {} ({:.1}s)",
             ev.stage.clone().unwrap_or_default(),
-            ev.elapsed_secs.unwrap_or(0.0)),
-        "chunk_start" | "chunk_started" => format!("chunk_start: {}/{}",
+            ev.elapsed_secs.unwrap_or(0.0)
+        ),
+        "chunk_start" | "chunk_started" => format!(
+            "chunk_start: {}/{}",
             ev.chunk_index.unwrap_or(0).saturating_add(1),
-            ev.chunk_total.unwrap_or(0)),
+            ev.chunk_total.unwrap_or(0)
+        ),
         "chunk_complete" => format!(
             "chunk_complete: {}/{}  q={:.2}  {:.1}s",
             ev.chunk_index.unwrap_or(0).saturating_add(1),
             ev.chunk_total.unwrap_or(0),
             ev.health_score.unwrap_or(0.0),
-            ev.elapsed_secs.unwrap_or(0.0)),
-        "chunk_timeout" => format!("chunk_timeout: chunk {}",
-            ev.chunk_index.unwrap_or(0).saturating_add(1)),
-        "chunk_failure" => format!("chunk_failure: chunk {} attempt {}",
+            ev.elapsed_secs.unwrap_or(0.0)
+        ),
+        "chunk_timeout" => format!(
+            "chunk_timeout: chunk {}",
+            ev.chunk_index.unwrap_or(0).saturating_add(1)
+        ),
+        "chunk_failure" => format!(
+            "chunk_failure: chunk {} attempt {}",
             ev.chunk_index.unwrap_or(0).saturating_add(1),
-            ev.attempt.unwrap_or(0)),
-        "asr_complete" => format!("asr_complete: chunk {}",
-            ev.chunk_index.unwrap_or(0).saturating_add(1)),
-        "mt_complete" => format!("mt_complete: chunk {}",
-            ev.chunk_index.unwrap_or(0).saturating_add(1)),
+            ev.attempt.unwrap_or(0)
+        ),
+        "asr_complete" => format!(
+            "asr_complete: chunk {}",
+            ev.chunk_index.unwrap_or(0).saturating_add(1)
+        ),
+        "mt_complete" => format!(
+            "mt_complete: chunk {}",
+            ev.chunk_index.unwrap_or(0).saturating_add(1)
+        ),
         "vad_segment" | "vad_complete" => ev.event.clone(),
-        "replan" => format!("replan: {}",
-            ev.message.clone().unwrap_or_default()),
+        "replan" => format!("replan: {}", ev.message.clone().unwrap_or_default()),
         other => other.to_string(),
     }
 }
@@ -441,7 +484,11 @@ fn format_event_summary(ev: &EngineEvent) -> String {
 /// executable first (the install-time invariant), then falls back to
 /// the in-repo release path so dev builds work without setup.
 pub fn locate_engine_binary() -> Option<PathBuf> {
-    let exe_name = if cfg!(windows) { "sub-zero.exe" } else { "sub-zero" };
+    let exe_name = if cfg!(windows) {
+        "sub-zero.exe"
+    } else {
+        "sub-zero"
+    };
     if let Ok(self_exe) = std::env::current_exe() {
         if let Some(dir) = self_exe.parent() {
             let candidate = dir.join(exe_name);
