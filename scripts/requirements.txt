@@ -13,7 +13,7 @@ ctranslate2>=4.0
 sentencepiece>=0.2.0
 
 # Numerical kernels for the diarization speech-feature pipeline.
-numpy>=1.26
+numpy>=2.4.6
 
 # Learned-quality-gate retrain harness (`scripts/train_learned_gate.py`).
 # Optional — only required when re-training the gate, not for the
