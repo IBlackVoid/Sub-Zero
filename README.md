@@ -179,29 +179,6 @@ real-corpus results (998 aligned cues, JP gameplay stream, human reference):
 
 ---
 
-## the theory (for the curious)
-
-Sub-Zero ships four original theorems that compose published results into
-something that didn't exist before:
-
-1. **Theorem 1 (F.3 Regret)**: UCB-Bernstein with counterfactual MI as
-   label-free reward signal — sublinear regret without ground truth.
-
-2. **Theorem 2 (Coverage-Regret Transfer)**: Jensen on C-BHC's concave
-   transfer function converts bandit regret to conformal coverage regret.
-   No published result connects these.
-
-3. **Theorem 3 (Coverage Floor)**: anytime production coverage guarantee
-   that strengthens with every processed file.
-
-4. **Theorem 4 (Rényi-Hellinger Sharpening)**: when H² < 1−exp(−KL/2),
-   the Hellinger penalty `H·√(2−H²)` is strictly tighter than the standard
-   C-BHC bound — computed from the same histograms at zero extra cost.
-
-see `docs/F4_lfas.md` for the full proofs, worked examples, and prior art audit.
-
----
-
 ## CLI reference
 
 ```
@@ -240,13 +217,13 @@ Backends:
 
 ```
 src/engine/              the pipeline + DOOM-QLOCK + quality gates
-src/engine/lfas.rs       LFAS scheduler (4 theorems, 218 tests)
+src/engine/lfas.rs       LFAS scheduler (4 theorems)
 src/engine/f3_stream.rs  streaming MI + Hellinger estimator
 src/engine/parallel.rs   chunked transcription worker pool
 src/engine/pipeline.rs   dual-path convergence orchestrator
 tui/src/                 ratatui dashboard
 scripts/                 benchmarks, model bootstrap, quality verifier
-docs/                    formal theorems, architecture, ADRs
+examples/                case studies (medical NLP, recsys)
 ```
 
 ---
@@ -254,14 +231,9 @@ docs/                    formal theorems, architecture, ADRs
 ## status
 
 218 tests. zero clippy warnings. CI on Linux, macOS, Windows.
-supply-chain gates via `cargo-deny` and `cargo-audit`.
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
-cargo deny check
-cargo audit
 ```
 
 ---
