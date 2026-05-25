@@ -1,0 +1,192 @@
+{
+  "schema_version": "1.1",
+  "kind": "learned-gate-feature-audit",
+  "corpus_path": "examples\\f3_case_study_medical\\corpus.jsonl",
+  "corpus_sha256": "27e177df98462bf2886b7cb29893b1fcc8ef8d428a399a319ef7ebc6bed3551f",
+  "git_commit": "b41c14aced99cccb20ab9ab7c6c3c443b9b14950",
+  "seed": 42,
+  "leak_threshold": 0.5,
+  "mask_pattern": "none",
+  "mask_features_explicit": [
+    "icu_days",
+    "intubated_within_24h",
+    "max_inflammatory_marker",
+    "max_pressor_dose",
+    "peak_lactate_24h"
+  ],
+  "mask_resolved": [
+    "icu_days",
+    "intubated_within_24h",
+    "max_inflammatory_marker",
+    "max_pressor_dose",
+    "peak_lactate_24h"
+  ],
+  "n_rows": 500,
+  "n_pos": 384,
+  "n_neg": 116,
+  "flagged_features": [
+    "max_pressor_dose",
+    "icu_days",
+    "max_inflammatory_marker",
+    "peak_lactate_24h",
+    "intubated_within_24h"
+  ],
+  "features": [
+    {
+      "name": "max_pressor_dose",
+      "mi_rich": 0.5381165644966908,
+      "mi_masked": 0.04522106053987862,
+      "mi_drop": 0.49289550395681214,
+      "leak_score": 0.9159641915461669,
+      "mi_rich_univariate": 0.5394498978300241,
+      "mi_masked_univariate": 0.0,
+      "mi_drop_univariate": 0.5394498978300241,
+      "leak_score_univariate": 1.0,
+      "masked_by_audit": true
+    },
+    {
+      "name": "icu_days",
+      "mi_rich": 0.5323193922245186,
+      "mi_masked": 0.0047524611206095635,
+      "mi_drop": 0.5275669311039091,
+      "leak_score": 0.9910721623333137,
+      "mi_rich_univariate": 0.5334210851824034,
+      "mi_masked_univariate": 0.0,
+      "mi_drop_univariate": 0.5334210851824034,
+      "leak_score_univariate": 1.0,
+      "masked_by_audit": true
+    },
+    {
+      "name": "max_inflammatory_marker",
+      "mi_rich": 0.5297618499731681,
+      "mi_masked": 0.017315117003926517,
+      "mi_drop": 0.5124467329692416,
+      "leak_score": 0.9673152813763326,
+      "mi_rich_univariate": 0.5297618499731681,
+      "mi_masked_univariate": 0.0,
+      "mi_drop_univariate": 0.5297618499731681,
+      "leak_score_univariate": 1.0,
+      "masked_by_audit": true
+    },
+    {
+      "name": "peak_lactate_24h",
+      "mi_rich": 0.5264462423188347,
+      "mi_masked": 0.0,
+      "mi_drop": 0.5264462423188347,
+      "leak_score": 1.0,
+      "mi_rich_univariate": 0.5263637593256375,
+      "mi_masked_univariate": 0.0,
+      "mi_drop_univariate": 0.5263637593256375,
+      "leak_score_univariate": 1.0,
+      "masked_by_audit": true
+    },
+    {
+      "name": "intubated_within_24h",
+      "mi_rich": 0.18561347071688328,
+      "mi_masked": 0.0,
+      "mi_drop": 0.18561347071688328,
+      "leak_score": 1.0,
+      "mi_rich_univariate": 0.22717433989417302,
+      "mi_masked_univariate": 0.0,
+      "mi_drop_univariate": 0.22717433989417302,
+      "leak_score_univariate": 1.0,
+      "masked_by_audit": true
+    },
+    {
+      "name": "glasgow_coma_scale",
+      "mi_rich": 0.08098232877530398,
+      "mi_masked": 0.08098232877530398,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.13155500229734218,
+      "mi_masked_univariate": 0.13155500229734218,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "oxygen_saturation",
+      "mi_rich": 0.07056643745927804,
+      "mi_masked": 0.07056643745927804,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.0770982802961504,
+      "mi_masked_univariate": 0.0770982802961504,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "admission_complaint_severity",
+      "mi_rich": 0.05738803453905805,
+      "mi_masked": 0.05738803453905805,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.07498790539792588,
+      "mi_masked_univariate": 0.07498790539792588,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "age",
+      "mi_rich": 0.058722918426793225,
+      "mi_masked": 0.058722918426793225,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.04947653729680335,
+      "mi_masked_univariate": 0.04947653729680335,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "heart_rate",
+      "mi_rich": 0.030288206164113207,
+      "mi_masked": 0.030288206164113207,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.044067309614704175,
+      "mi_masked_univariate": 0.044067309614704175,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "comorbidity_count",
+      "mi_rich": 0.03683472903921481,
+      "mi_masked": 0.03683472903921481,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.021058351070595727,
+      "mi_masked_univariate": 0.021058351070595727,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "systolic_bp",
+      "mi_rich": 0.01570544194831358,
+      "mi_masked": 0.01570544194831358,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.019400237420762245,
+      "mi_masked_univariate": 0.019400237420762245,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "sex",
+      "mi_rich": 0.0,
+      "mi_masked": 0.0,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.0,
+      "mi_masked_univariate": 0.0,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    }
+  ]
+}

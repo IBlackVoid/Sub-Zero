@@ -1,0 +1,59 @@
+# cargo-deny configuration for Sub-Zero.
+#
+# Run locally with: cargo deny check
+# Updated by ci.yml's `deny` job on every PR and push.
+#
+# Schema v2 (cargo-deny >= 0.14). See:
+#   https://embarkstudios.github.io/cargo-deny/checks/cfg.html
+
+[graph]
+all-features = false
+
+# ---- Advisories ------------------------------------------------------------
+[advisories]
+version = 2
+yanked = "deny"
+# Add advisory IDs here only with a written reason and a tracking issue.
+ignore = []
+
+# ---- Licenses --------------------------------------------------------------
+[licenses]
+version = 2
+# Permissive licenses compatible with MIT distribution. If a new dependency
+# uses a license not in this list, the CI job fails and we make an explicit
+# decision rather than silently absorbing it.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+# Per-crate exceptions go here with a comment explaining the choice.
+exceptions = []
+
+# ---- Bans ------------------------------------------------------------------
+[bans]
+# Duplicate versions of a transitive dependency add binary size and review
+# surface. Warn for now; tighten to "deny" once the tree is clean.
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+deny = []
+
+# ---- Sources ---------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,116 @@
+name: repo-hygiene
+
+# Defence-in-depth against accidentally committing private media or model
+# weights. `.gitignore` is the first line of defence; this workflow is the
+# second: it fails the build if a PR's tracked file list contains anything
+# matching the blocked patterns. Catches the `git add -f some_video.mp4`
+# mistake before review.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repo-hygiene-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  forbidden-paths:
+    name: forbidden file patterns
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history for diff-based checks on PRs.
+          fetch-depth: 0
+
+      - name: Reject tracked private media / model weights
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Patterns that must never be tracked. The list mirrors the global
+          # ignore rules in `.gitignore`; defining it here lets CI fail loud
+          # if `.gitignore` is bypassed via `git add -f`.
+          patterns=(
+            '\.(mp4|mkv|webm|mov|avi|flv|wmv|m4v|ts)$'
+            '\.(mp3|m4a|flac|opus|ogg|aac)$'
+            '\.(safetensors|gguf|ggml|onnx|pt|pth|bin)$'
+            '\.sub-zero\.json$'
+            '\.sub-zero\.trace\.json$'
+            '^SILENT HILL'
+            '^Try Not To Get'
+          )
+
+          # Exceptions: paths matching one of the above that we genuinely
+          # want tracked. Add a one-line justification next to each entry.
+          allowlist=(
+            # JFK 1961 inaugural address excerpt — public domain (US federal
+            # government work, 17 U.S.C. § 105). Smoke-test fixture; provenance
+            # documented in fixtures/README.md.
+            "fixtures/clip_10s.wav"
+          )
+
+          tracked="$(git ls-files)"
+          violations=""
+
+          for pattern in "${patterns[@]}"; do
+            matches="$(printf '%s\n' "$tracked" | grep -E "$pattern" || true)"
+            if [[ -z "$matches" ]]; then
+              continue
+            fi
+            while IFS= read -r path; do
+              [[ -z "$path" ]] && continue
+              allow=""
+              for ok in "${allowlist[@]:-}"; do
+                if [[ "$path" == "$ok" ]]; then
+                  allow="yes"
+                  break
+                fi
+              done
+              if [[ -z "$allow" ]]; then
+                violations+="${path}"$'\n'
+              fi
+            done <<<"$matches"
+          done
+
+          if [[ -n "$violations" ]]; then
+            echo "::error::tracked files match private-media / model-weight patterns:"
+            printf '  %s\n' $violations
+            echo
+            echo "If one of these is genuinely meant to be tracked, add it to"
+            echo "the allowlist in .github/workflows/repo-hygiene.yml with a"
+            echo "one-line justification, and confirm its license."
+            exit 1
+          fi
+
+          echo "repo-hygiene: ok — no forbidden patterns in tracked files."
+
+      - name: Cap individual tracked file size at 5 MiB
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Anything larger than 5 MiB on `main` is almost certainly a media
+          # file or a model weight that slipped past the pattern guard.
+          limit=$((5 * 1024 * 1024))
+          oversized=""
+          while IFS= read -r -d '' path; do
+            size="$(wc -c <"$path")"
+            if (( size > limit )); then
+              oversized+="$(printf '%10s  %s\n' "$size" "$path")"$'\n'
+            fi
+          done < <(git ls-files -z)
+
+          if [[ -n "$oversized" ]]; then
+            echo "::error::tracked files larger than 5 MiB:"
+            printf '%s' "$oversized"
+            echo
+            echo "Large assets belong outside the repo (HuggingFace, releases,"
+            echo "a separate fixtures repository). Trim before merging."
+            exit 1
+          fi
+          echo "repo-hygiene: ok — all tracked files <= 5 MiB."
