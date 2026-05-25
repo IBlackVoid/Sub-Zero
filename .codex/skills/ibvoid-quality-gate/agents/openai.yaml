@@ -1,0 +1,8 @@
+interface:
+  display_name: "IBVoid Quality Gate"
+  short_description: "Verify code before delivery"
+  brand_color: "#16A34A"
+  default_prompt: "Use $ibvoid-quality-gate to review and verify this change."
+
+policy:
+  allow_implicit_invocation: true

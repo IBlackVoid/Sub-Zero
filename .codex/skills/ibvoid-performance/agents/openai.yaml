@@ -1,0 +1,8 @@
+interface:
+  display_name: "IBVoid Performance"
+  short_description: "Optimize with measured evidence"
+  brand_color: "#EA580C"
+  default_prompt: "Use $ibvoid-performance to analyze and optimize this hot path."
+
+policy:
+  allow_implicit_invocation: true
