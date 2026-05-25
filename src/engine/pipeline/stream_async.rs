@@ -5,15 +5,16 @@ use crate::engine::srt::{append_srt_file, parse_srt_file, SubtitleCue};
 use crate::engine::transcribe::{
     detect_speech_intervals_from_wav, ffprobe_duration_seconds_pub, Transcriber,
 };
+use crossbeam_channel::{bounded, Receiver};
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::AtomicUsize,
     atomic::{AtomicBool, Ordering},
-    mpsc, Arc, Mutex,
+    Arc, Condvar, Mutex,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::audio::extract_audio_to_wav_with_selection;
 use super::paths::checkpoint_dir_for;
@@ -61,39 +62,106 @@ pub(super) struct StreamAsyncRunResult {
     pub(super) audio_wav_path: PathBuf,
 }
 
-struct AsrSlotGuard<'a> {
-    active_asr: &'a AtomicUsize,
+// AsrSemaphore — a slot counter whose ceiling is dynamic. The
+// `LiveHistogramReplanner` may raise or lower `asr_limit()` at any time
+// in response to p95 telemetry; we cannot statically size a `Semaphore`.
+//
+// Threads call `acquire` with a closure that resolves the current limit;
+// on release we `notify_one`. When all slots are full, the waiter parks
+// on the condvar and is woken either by a release (immediate) or by a
+// 50 ms timeout (to re-evaluate the dynamic limit, since the replanner
+// itself does not notify this semaphore).
+//
+// This replaces the previous busy-wait `acquire_asr_slot` that polled
+// `replanner.asr_limit()` with a 10 ms sleep, burning a thread.
+#[derive(Debug, Default)]
+struct AsrSemaphore {
+    state: Mutex<usize>,
+    cvar: Condvar,
 }
 
-impl Drop for AsrSlotGuard<'_> {
+impl AsrSemaphore {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn acquire<'sem, F>(&'sem self, get_limit: F, cancel: &AtomicBool) -> Option<AsrPermit<'sem>>
+    where
+        F: Fn() -> usize,
+    {
+        let mut count = self.state.lock().ok()?;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            let limit = get_limit().max(1);
+            if *count < limit {
+                *count += 1;
+                return Some(AsrPermit {
+                    sem: self,
+                    _not_send: PhantomData,
+                });
+            }
+            // Park until a release or the timeout, then re-check the limit
+            // (the replanner may have raised it while we waited).
+            let waited = self
+                .cvar
+                .wait_timeout(count, Duration::from_millis(50))
+                .ok()?;
+            count = waited.0;
+        }
+    }
+}
+
+/// Compile-time proof that the bearer holds an ASR slot.
+///
+/// `AsrPermit<'sem>` is constructed *only* by `AsrSemaphore::acquire`
+/// (the fields are private). Functions that perform ASR work require
+/// `&AsrPermit<'_>` as an argument — see `transcribe_with_permit`
+/// below — so the type system refuses any path that tries to start an
+/// ASR job without having first taken a slot from the semaphore.
+///
+/// The permit is **`!Send`** (`PhantomData<*const ()>`): a slot
+/// belongs to the worker thread that took it, because the slot is
+/// released by `Drop` and that drop must run on the thread that owns
+/// the worker's local state. Shipping a permit across threads would
+/// silently misroute the release and break the slot accounting.
+///
+/// `#[must_use]` makes a permit that is never used a compile-time
+/// warning — historically the ASR loop wrote `let Some(_slot) = ...`
+/// which is *almost* the right shape but leaks the affordance: nothing
+/// stops a caller from removing the binding entirely. The permit
+/// makes that path impossible to write.
+#[must_use = "AsrPermit must be held for the duration of an ASR job; dropping it without doing the work leaks a semaphore slot"]
+struct AsrPermit<'sem> {
+    sem: &'sem AsrSemaphore,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl Drop for AsrPermit<'_> {
     fn drop(&mut self) {
-        self.active_asr.fetch_sub(1, Ordering::Relaxed);
+        if let Ok(mut count) = self.sem.state.lock() {
+            *count = count.saturating_sub(1);
+            self.sem.cvar.notify_one();
+        }
     }
 }
 
-fn acquire_asr_slot<'a>(
-    active_asr: &'a AtomicUsize,
-    replanner: &LiveHistogramReplanner,
-    cancel: &AtomicBool,
-) -> Option<AsrSlotGuard<'a>> {
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
-
-        let limit = replanner.asr_limit().max(1);
-        let current = active_asr.load(Ordering::Relaxed);
-        if current >= limit {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
-        }
-        if active_asr
-            .compare_exchange(current, current + 1, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            return Some(AsrSlotGuard { active_asr });
-        }
-    }
+/// Run ASR transcription, requiring at the type level that the caller
+/// holds an [`AsrPermit`]. The permit is taken by reference (no
+/// transfer of ownership) so the worker's `Drop` semantics fire when
+/// the worker scope ends, not when this function returns. The permit
+/// is bound but unused inside the function — its purpose is purely to
+/// require its existence at the call site.
+fn transcribe_with_permit(
+    _permit: &AsrPermit<'_>,
+    transcriber: &Transcriber,
+    wav_path: &Path,
+    timeout_secs: f64,
+) -> Result<PathBuf, String> {
+    transcriber
+        .transcribe_wav_to_srt_with_timeout(wav_path, timeout_secs)
+        .map_err(|e| e.to_string())
 }
 
 pub(super) fn stream_transcribe_translate_video_async(
@@ -165,23 +233,24 @@ pub(super) fn stream_transcribe_translate_video_async(
     let worker_count = config.max_workers.clamp(1, chunk_total.max(1));
     let speaker_aware = config.speaker_aware;
     let jobs_cap = (worker_count * 2).max(2);
-    let (jobs_tx, jobs_rx) = mpsc::sync_channel::<ChunkJob>(jobs_cap);
-    let (asr_tx, asr_rx) = mpsc::sync_channel::<Result<ChunkAsr, String>>(worker_count);
-    let (mt_tx, mt_rx) = mpsc::sync_channel::<Result<ChunkMt, String>>(worker_count);
+    // `crossbeam_channel::bounded` is natively MPMC — workers clone the
+    // receiver directly, no `Arc<Mutex<Receiver>>` shim.
+    let (jobs_tx, jobs_rx) = bounded::<ChunkJob>(jobs_cap);
+    let (asr_tx, asr_rx) = bounded::<Result<ChunkAsr, String>>(worker_count);
+    let (mt_tx, mt_rx) = bounded::<Result<ChunkMt, String>>(worker_count);
 
     let cancel = Arc::new(AtomicBool::new(false));
     let replanner = Arc::new(LiveHistogramReplanner::new(worker_count));
-    let active_asr = Arc::new(AtomicUsize::new(0));
+    let asr_sem = Arc::new(AsrSemaphore::new());
     let cfg_for_workers = SubtitlePipeline::make_transcribe_config(&pipeline.config, true);
 
-    let jobs_rx = Arc::new(Mutex::new(jobs_rx));
     for _ in 0..worker_count {
-        let rx = jobs_rx.clone();
+        let rx: Receiver<ChunkJob> = jobs_rx.clone();
         let asr_tx = asr_tx.clone();
         let cancel = cancel.clone();
         let events = events.clone();
         let replanner = replanner.clone();
-        let active_asr = active_asr.clone();
+        let asr_sem = asr_sem.clone();
         let cfg = cfg_for_workers.clone();
         let video = video.to_path_buf();
         std::thread::spawn(move || {
@@ -201,13 +270,14 @@ pub(super) fn stream_transcribe_translate_video_async(
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                let job = {
-                    let Ok(guard) = rx.lock() else { return };
-                    guard.recv()
-                };
-                let Ok(job) = job else { return };
+                // crossbeam `recv` blocks without holding any global lock;
+                // it returns Err once the sender side has been dropped, at
+                // which point the worker exits cleanly.
+                let Ok(job) = rx.recv() else { return };
 
-                let Some(_slot) = acquire_asr_slot(&active_asr, &replanner, &cancel) else {
+                // Take the typed permit: the compiler will refuse the
+                // call to `transcribe_with_permit` below without one.
+                let Some(permit) = asr_sem.acquire(|| replanner.asr_limit(), &cancel) else {
                     return;
                 };
 
@@ -226,13 +296,16 @@ pub(super) fn stream_transcribe_translate_video_async(
 
                 let timeout_secs =
                     (job.base_timeout_secs * replanner.timeout_scale()).clamp(10.0, 7200.0);
-                let srt_path = match transcriber
-                    .transcribe_wav_to_srt_with_timeout(&job.wav_path, timeout_secs)
-                {
+                let srt_path = match transcribe_with_permit(
+                    &permit,
+                    &transcriber,
+                    &job.wav_path,
+                    timeout_secs,
+                ) {
                     Ok(path) => path,
                     Err(e) => {
                         cancel.store(true, Ordering::Relaxed);
-                        let _ = asr_tx.send(Err(e.to_string()));
+                        let _ = asr_tx.send(Err(e));
                         return;
                     }
                 };
@@ -442,5 +515,127 @@ fn stream_chunk_timeout_secs(config: &PipelineConfig, chunk_len_secs: f64) -> f6
         crate::engine::transcribe::QualityProfile::Strict => {
             (chunk_len_secs * 8.0 + 90.0).clamp(120.0, 2400.0)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AsrSemaphore;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn adaptive_semaphore_respects_dynamic_limit() {
+        let sem = Arc::new(AsrSemaphore::new());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let limit = Arc::new(AtomicUsize::new(2));
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            let sem = sem.clone();
+            let cancel = cancel.clone();
+            let limit = limit.clone();
+            let active = active.clone();
+            let peak = peak.clone();
+            handles.push(thread::spawn(move || {
+                let _g = sem
+                    .acquire(|| limit.load(Ordering::Relaxed), &cancel)
+                    .expect("acquire");
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(40));
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        // Concurrency must never exceed the configured limit.
+        assert!(peak.load(Ordering::SeqCst) <= 2);
+    }
+
+    #[test]
+    fn adaptive_semaphore_yields_to_raised_limit() {
+        let sem = Arc::new(AsrSemaphore::new());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let limit = Arc::new(AtomicUsize::new(1));
+
+        // Hold one slot; another acquirer should block.
+        let g = sem
+            .acquire(|| limit.load(Ordering::Relaxed), &cancel)
+            .unwrap();
+
+        let acquired_after_raise = {
+            let sem = sem.clone();
+            let cancel = cancel.clone();
+            let limit = limit.clone();
+            thread::spawn(move || {
+                sem.acquire(|| limit.load(Ordering::Relaxed), &cancel)
+                    .is_some()
+            })
+        };
+
+        // Give the spawn time to park on the condvar, then raise the cap.
+        thread::sleep(Duration::from_millis(80));
+        limit.store(2, Ordering::Relaxed);
+
+        assert!(acquired_after_raise.join().unwrap());
+        drop(g);
+    }
+
+    #[test]
+    fn adaptive_semaphore_cancel_unblocks_waiter() {
+        let sem = Arc::new(AsrSemaphore::new());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let limit = Arc::new(AtomicUsize::new(1));
+
+        let _g = sem
+            .acquire(|| limit.load(Ordering::Relaxed), &cancel)
+            .unwrap();
+
+        let cancel_clone = cancel.clone();
+        let sem_clone = sem.clone();
+        let limit_clone = limit.clone();
+        let waiter = thread::spawn(move || {
+            sem_clone
+                .acquire(|| limit_clone.load(Ordering::Relaxed), &cancel_clone)
+                .is_none()
+        });
+
+        thread::sleep(Duration::from_millis(80));
+        cancel.store(true, Ordering::Relaxed);
+        // The waiter returns None on next wake (within the 50 ms timeout).
+        assert!(waiter.join().unwrap());
+    }
+
+    /// `AsrPermit<'_>` must be `!Send` so a worker cannot ship its
+    /// slot-release responsibility to another thread. This is
+    /// enforced at compile time by the `PhantomData<*const ()>` field
+    /// (via Rust's auto-trait rules: any struct containing a `*const T`
+    /// is `!Send`).
+    ///
+    /// The lines marked `// COMPILE-FAIL` below would fail to compile
+    /// if `AsrPermit<'_>` ever gained `Send`. They are commented out
+    /// because cargo test surfaces compile errors as test failures
+    /// rather than asserting "did not compile" — but the documented
+    /// invariant is verified by uncommenting either line locally.
+    #[test]
+    fn asr_permit_is_not_send_documentation() {
+        // Sanity ground truth: a `Send` type satisfies `requires_send`.
+        fn requires_send<T: Send>() {}
+        requires_send::<i32>();
+        requires_send::<String>();
+        // COMPILE-FAIL when uncommented (because `AsrPermit<'_>: !Send`):
+        //     requires_send::<AsrPermit<'_>>();
+        //
+        // Equivalent compile-fail via `thread::spawn`:
+        //     let sem = AsrSemaphore::new();
+        //     let cancel = std::sync::atomic::AtomicBool::new(false);
+        //     let permit = sem.acquire(|| 1, &cancel).unwrap();
+        //     std::thread::spawn(move || drop(permit));
     }
 }

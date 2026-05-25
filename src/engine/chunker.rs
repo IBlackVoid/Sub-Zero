@@ -168,15 +168,20 @@ fn invert_to_silence(duration: f64, speech: &[VadInterval], min_dur: f64) -> Vec
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-struct SilenceGap {
-    start: f64,
-    end: f64,
-    centroid: f64,
+#[doc(hidden)]
+pub struct SilenceGap {
+    pub start: f64,
+    pub end: f64,
+    pub centroid: f64,
 }
 
 /// Greedy boundary selection: walk through the audio at `target_step` intervals
 /// and snap each boundary to the nearest silence-gap centroid.
-fn pick_boundaries(duration: f64, gaps: &[SilenceGap], target_step: f64) -> Vec<f64> {
+///
+/// `pub` for `cargo bench` reach via `sub_zero::bench_internals`. Not a
+/// stability surface — see lib.rs for the public-API contract.
+#[doc(hidden)]
+pub fn pick_boundaries(duration: f64, gaps: &[SilenceGap], target_step: f64) -> Vec<f64> {
     if gaps.is_empty() {
         // No silence gaps found — fall back to uniform splitting.
         let n = (duration / target_step).ceil() as usize;

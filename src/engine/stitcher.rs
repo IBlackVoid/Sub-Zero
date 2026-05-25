@@ -9,22 +9,13 @@
 use crate::engine::parallel::ChunkTranscription;
 use crate::engine::srt::SubtitleCue;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum StitcherError {
-    Stitch { source: String },
+    #[error("failed to stitch chunk subtitles: {message}")]
+    Stitch { message: String },
 }
 
 pub type StitcherResult<T> = Result<T, StitcherError>;
-
-impl std::fmt::Display for StitcherError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stitch { source } => write!(f, "failed to stitch chunk subtitles: {source}"),
-        }
-    }
-}
-
-impl std::error::Error for StitcherError {}
 
 /// Similarity threshold (0.0–1.0) for considering two cues as duplicates.
 const DEDUP_SIMILARITY_THRESHOLD: f64 = 0.6;
@@ -32,7 +23,7 @@ const DEDUP_SIMILARITY_THRESHOLD: f64 = 0.6;
 /// Merge chunk transcriptions into a single cue sequence with correct global
 /// timestamps and no duplicates at chunk boundaries.
 pub fn stitch_chunks(chunks: &[ChunkTranscription]) -> StitcherResult<Vec<SubtitleCue>> {
-    stitch_chunks_inner(chunks).map_err(|source| StitcherError::Stitch { source })
+    stitch_chunks_inner(chunks).map_err(|message| StitcherError::Stitch { message })
 }
 
 fn stitch_chunks_inner(chunks: &[ChunkTranscription]) -> Result<Vec<SubtitleCue>, String> {
@@ -88,18 +79,23 @@ fn stitch_chunks_inner(chunks: &[ChunkTranscription]) -> Result<Vec<SubtitleCue>
 // ── internal types ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-struct TimedCue {
-    abs_start: f64,
-    abs_end: f64,
-    text: String,
-    chunk_index: usize,
+#[doc(hidden)]
+pub struct TimedCue {
+    pub abs_start: f64,
+    pub abs_end: f64,
+    pub text: String,
+    pub chunk_index: usize,
 }
 
 // ── deduplication ────────────────────────────────────────────────────────────
 
 /// Walk through sorted cues and remove near-duplicates (same text,
 /// overlapping time) that arise from chunk overlap regions.
-fn deduplicate_overlaps(cues: &[TimedCue]) -> Vec<TimedCue> {
+///
+/// `pub` for `cargo bench` reach via `sub_zero::bench_internals`. Not a
+/// stability surface — see lib.rs for the public-API contract.
+#[doc(hidden)]
+pub fn deduplicate_overlaps(cues: &[TimedCue]) -> Vec<TimedCue> {
     if cues.is_empty() {
         return Vec::new();
     }
