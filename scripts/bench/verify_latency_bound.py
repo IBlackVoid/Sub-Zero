@@ -66,11 +66,51 @@ def extract_n_chunks(trace: dict) -> int | None:
     return None
 
 
+# Stages known to run with the pipeline's plan-level worker count. Every
+# other stage is treated as serial (workers=1). This mapping is the
+# verifier's load-bearing assumption — if a new parallel stage is added
+# to the engine, add its trace name here. See `src/engine/pipeline.rs`
+# `record_runtime_stage(... "<stage_name>", ...)` for the truth set.
+_PARALLEL_STAGE_NAMES = frozenset(
+    {
+        # New async streaming pipeline.
+        "stream_transcribe_translate",
+        # Original sync parallel pipeline.
+        "parallel_pipeline",
+        # Translation pass uses the MT daemon's batched workers.
+        "translate",
+        # Legacy alias retained for old traces.
+        "transcribe",
+    }
+)
+
+
 def per_stage_workers(trace: dict, name: str) -> int:
+    # 1) Prefer an explicit per-stage worker count embedded in the trace
+    #    when the engine has emitted one (forward-compat path for newer
+    #    trace formats that promote workers out of `details`).
+    for stage in trace.get("stages") or []:
+        if not isinstance(stage, dict) or stage.get("name") != name:
+            continue
+        if isinstance(stage.get("workers"), int) and stage["workers"] > 0:
+            return int(stage["workers"])
+        details = stage.get("details")
+        if (
+            isinstance(details, dict)
+            and isinstance(details.get("workers"), int)
+            and details["workers"] > 0
+        ):
+            return int(details["workers"])
+    # 2) Otherwise, only the known parallel stages take the plan-level
+    #    worker count; serial stages keep workers=1. The previous version
+    #    of this script only checked `name == "transcribe"`, which never
+    #    matched any real stage name and so silently treated every stage
+    #    as serial — underestimating service time on parallel stages.
+    if name not in _PARALLEL_STAGE_NAMES:
+        return 1
     plan = trace.get("plan_used") or trace.get("plan") or {}
-    if isinstance(plan, dict):
-        if name == "transcribe" and isinstance(plan.get("workers"), int):
-            return max(int(plan["workers"]), 1)
+    if isinstance(plan, dict) and isinstance(plan.get("workers"), int):
+        return max(int(plan["workers"]), 1)
     return 1
 
 
