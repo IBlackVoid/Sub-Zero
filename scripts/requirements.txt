@@ -1,0 +1,21 @@
+# Optional Python runtime dependencies for the neural MT adapter and
+# the audio/diagnostic scripts. These are NOT required to build or use
+# the Rust engine — they only matter when the CLI delegates to the
+# Python MT daemon (`scripts/mt_daemon.py`) or runs `diarize_speakers.py`.
+#
+# Versions are loose floors, not pins: the maintainer prefers to ride
+# upstream's stable release line for these. Dependabot opens weekly PRs
+# (see `.github/dependabot.yml`) when a newer minor/patch lands.
+
+# Neural MT inference backend. NLLB-200 weights are loaded into a
+# CTranslate2 model via SentencePiece tokenisation.
+ctranslate2>=4.0
+sentencepiece>=0.2.0
+
+# Numerical kernels for the diarization speech-feature pipeline.
+numpy>=2.4.6
+
+# Learned-quality-gate retrain harness (`scripts/train_learned_gate.py`).
+# Optional — only required when re-training the gate, not for the
+# normal engine runtime.
+scikit-learn>=1.4

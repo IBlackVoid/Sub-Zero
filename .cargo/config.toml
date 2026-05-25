@@ -1,0 +1,9 @@
+# Workspace-wide cargo configuration. Kept tiny on purpose — the only
+# reason this file exists is to wire the `cargo xtask` alias.
+#
+# `cargo xtask <subcommand>` runs the dep-free task runner under
+# `xtask/`. See `xtask/src/main.rs` for the supported subcommands and
+# why they exist.
+
+[alias]
+xtask = "run --package xtask --quiet --"

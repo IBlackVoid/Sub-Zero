@@ -1,0 +1,8 @@
+interface:
+  display_name: "IBVoid Orchestrator"
+  short_description: "Route complex work to specialists"
+  brand_color: "#2563EB"
+  default_prompt: "Use $ibvoid-orchestrator to decompose this project and route the work."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,8 @@
+interface:
+  display_name: "IBVoid Theory Lab"
+  short_description: "Formalize theories and proofs"
+  brand_color: "#7C3AED"
+  default_prompt: "Use $ibvoid-theory-lab to formalize this theory and proof."
+
+policy:
+  allow_implicit_invocation: true

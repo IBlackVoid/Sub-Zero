@@ -10,15 +10,15 @@ ratatui   = "0.28"
 crossterm = "0.28"
 serde     = { version = "1", features = ["derive"] }
 serde_json = "1"
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+sha2 = "0.10"
 # Audio playback for video animations only. The TUI auto-detects a
 # sibling `.wav` next to the JSONL and starts playback on switch.
 # Any failure to open an audio device is non-fatal — visuals continue.
 rodio     = { version = "0.20", default-features = false, features = ["wav"] }
-# Pure-Rust SHA-256 used by the hidden-content gate: source code only
-# ever holds the 32-byte digest of each secret phrase, never the phrase
-# itself. The same hash drives a CTR-style keystream that encrypts the
-# easter-egg manifest and assets at rest.
-sha2      = "0.10"
+# Hidden-content assets use Argon2id plus ChaCha20-Poly1305 envelopes.
+zeroize = "1"
 
 [[bin]]
 name = "sub-zero-tui"

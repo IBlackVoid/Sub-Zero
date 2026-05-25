@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.1",
+  "kind": "learned-gate-feature-audit",
+  "corpus_path": "examples\\f3_case_study_medical\\corpus.jsonl",
+  "corpus_sha256": "27e177df98462bf2886b7cb29893b1fcc8ef8d428a399a319ef7ebc6bed3551f",
+  "git_commit": "b41c14aced99cccb20ab9ab7c6c3c443b9b14950",
+  "seed": 42,
+  "leak_threshold": 1.01,
+  "mask_pattern": "none",
+  "mask_features_explicit": [],
+  "mask_resolved": [],
+  "n_rows": 500,
+  "n_pos": 384,
+  "n_neg": 116,
+  "flagged_features": [],
+  "features": []
+}

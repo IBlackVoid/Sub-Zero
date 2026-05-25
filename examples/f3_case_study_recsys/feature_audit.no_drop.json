@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.1",
+  "kind": "learned-gate-feature-audit",
+  "corpus_path": "examples\\f3_case_study_recsys\\corpus.jsonl",
+  "corpus_sha256": "da5f52ed07d17a96b25a2d4c5a64665a9a707017055b659cce87762731f45994",
+  "git_commit": "b41c14aced99cccb20ab9ab7c6c3c443b9b14950",
+  "seed": 42,
+  "leak_threshold": 1.01,
+  "mask_pattern": "none",
+  "mask_features_explicit": [],
+  "mask_resolved": [],
+  "n_rows": 800,
+  "n_pos": 349,
+  "n_neg": 451,
+  "flagged_features": [],
+  "features": []
+}

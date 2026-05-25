@@ -190,8 +190,8 @@ impl SubtitlePipeline {
     pub fn new(config: PipelineConfig) -> PipelineResult<Self> {
         let transcriber =
             Transcriber::new(Self::make_transcribe_config(&config, config.transcribe)).map_err(
-                |source| PipelineError::Initialization {
-                    source: source.to_string(),
+                |err| PipelineError::Initialization {
+                    message: err.to_string(),
                 },
             )?;
         let translator = Translator::new(TranslatorConfig {
@@ -211,8 +211,8 @@ impl SubtitlePipeline {
             mt_enforce_quality_floor: config.mt_enforce_quality_floor,
             quality_profile: config.quality_profile,
         })
-        .map_err(|source| PipelineError::Initialization {
-            source: source.to_string(),
+        .map_err(|err| PipelineError::Initialization {
+            message: err.to_string(),
         })?;
         Ok(Self {
             config,
@@ -253,9 +253,9 @@ impl SubtitlePipeline {
 
     pub fn process_input(&self, input: &Path) -> PipelineResult<PathBuf> {
         self.process_input_inner(input)
-            .map_err(|source| PipelineError::ProcessInput {
+            .map_err(|message| PipelineError::ProcessInput {
                 input: input.to_path_buf(),
-                source,
+                message,
             })
     }
 
@@ -301,7 +301,14 @@ impl SubtitlePipeline {
 
             let metadata_started = std::time::Instant::now();
             let translated = parse_srt_file(&output).map_err(|error| error.to_string())?;
-            self.write_metadata_sidecar(input, &output, &translated, trace_path.as_deref(), None, None)?;
+            self.write_metadata_sidecar(
+                input,
+                &output,
+                &translated,
+                trace_path.as_deref(),
+                None,
+                None,
+            )?;
             record_runtime_stage(
                 &events,
                 runtime_trace.as_mut(),
@@ -588,8 +595,7 @@ impl SubtitlePipeline {
             }),
         );
 
-        let mut glossary =
-            crate::engine::character_glossary::CharacterGlossary::load_default();
+        let mut glossary = crate::engine::character_glossary::CharacterGlossary::load_default();
         glossary.apply(&mut translated);
         glossary.learn(&translated);
         if let Err(error) = glossary.save() {
@@ -626,10 +632,8 @@ impl SubtitlePipeline {
         );
 
         let voice_started = std::time::Instant::now();
-        let mut voice_priors =
-            crate::engine::voice_consistency::VoicePriors::load_default();
-        let (voice_reports, voice_stats) =
-            voice_priors.process_batch(&translated, &speakers);
+        let mut voice_priors = crate::engine::voice_consistency::VoicePriors::load_default();
+        let (voice_reports, voice_stats) = voice_priors.process_batch(&translated, &speakers);
         if let Err(error) = voice_priors.save() {
             eprintln!("warning: voice priors save failed: {error}");
         }
@@ -770,6 +774,29 @@ impl SubtitlePipeline {
         let metadata_path = metadata_sidecar_path(input)?;
         let metadata_output_path = metadata_sidecar_path(output)?;
         let learned_gate = evaluate_learned_gate(&structural, &semantic, speaker_info.as_ref());
+
+        // Pre-compute verdict incorporating chunk failure rate.
+        // If > 30% of parallel chunks failed, the output is incomplete regardless
+        // of per-cue quality metrics (which only evaluate what exists, not what's missing).
+        let chunk_failure_ratio = checkpoint_summary.as_ref()
+            .and_then(|cp| {
+                let completed = cp.get("completed_chunks")?.as_u64()?;
+                let failed = cp.get("failed_chunks")?.as_u64()?;
+                let total = completed + failed;
+                if total > 0 { Some(failed as f64 / total as f64) } else { None }
+            })
+            .unwrap_or(0.0);
+        let semantic_fail = semantic.is_pathological(self.config.quality_profile);
+        let coverage_degraded = chunk_failure_ratio > 0.3;
+        let verdict_pass = !semantic_fail && !coverage_degraded;
+        let verdict_reason = if semantic_fail {
+            semantic.summary()
+        } else if coverage_degraded {
+            format!("partial: {:.0}% of chunks failed during transcription", chunk_failure_ratio * 100.0)
+        } else {
+            "quality gate passed".to_string()
+        };
+
         let payload = serde_json::json!({
             "version": "1.1",
             "algorithm": "IBVoid DOOM-QLOCK",
@@ -791,10 +818,18 @@ impl SubtitlePipeline {
             "learned_gate": learned_gate.as_ref().map(|out| serde_json::json!({
                 "enabled": true,
                 "model": out.model_path.display().to_string(),
+                "schema_version": out.schema_version,
                 "enforce": out.enforce,
                 "threshold": out.threshold,
                 "score": out.score,
-                "pass": out.pass,
+                "pass": out.pass(),
+                "decision": out.decision,
+                "lower_bound": out.lower_bound,
+                "upper_bound": out.upper_bound,
+                "conformal_alpha": out.conformal_alpha,
+                "conformal_q_hat": out.conformal_q_hat,
+                "conformal_cal_size": out.conformal_cal_size,
+                "isotonic_out_of_bounds": out.isotonic_out_of_bounds,
             })),
             "plan_used": {
                 "parallel": self.config.parallel,
@@ -829,7 +864,7 @@ impl SubtitlePipeline {
                 .as_ref()
                 .map(|summary| summary.get("recovery_events").cloned().unwrap_or_else(|| serde_json::json!([])))
                 .unwrap_or_else(|| serde_json::json!([])),
-            "checkpoint": checkpoint_summary.unwrap_or_else(|| serde_json::json!({
+            "checkpoint": checkpoint_summary.as_ref().cloned().unwrap_or_else(|| serde_json::json!({
                 "status": "none",
                 "completed_chunks": 0,
                 "failed_chunks": 0,
@@ -837,12 +872,9 @@ impl SubtitlePipeline {
             })),
             "warnings": build_metadata_warnings(&semantic),
             "verdict": {
-                "pass": !semantic.is_pathological(self.config.quality_profile),
-                "reason": if semantic.is_pathological(self.config.quality_profile) {
-                    semantic.summary()
-                } else {
-                    "quality gate passed".to_string()
-                }
+                "pass": verdict_pass,
+                "reason": verdict_reason,
+                "chunk_failure_ratio": chunk_failure_ratio,
             }
         });
         let serialized = serde_json::to_string_pretty(&payload)
@@ -884,18 +916,29 @@ impl SubtitlePipeline {
         let learned = evaluate_learned_gate(&structural, &health, None);
         if !health.is_pathological(self.config.quality_profile) {
             if let Some(out) = learned {
-                if out.enforce && !out.pass {
+                // Enforcement policy v2:
+                //   - REJECT with enforce ⇒ hard fail.
+                //   - REJECT without enforce ⇒ warn, continue.
+                //   - ABSTAIN ⇒ warn (the gate honestly does not know),
+                //     never enforce — abstain is not a fail.
+                //   - PASS ⇒ silent.
+                if out.decision.is_reject() && out.enforce {
                     return Err(format!(
-                        "learned quality gate failed: score={:.3} threshold={:.3} model={}",
+                        "learned quality gate REJECT: score={:.3} band=[{:.3},{:.3}] threshold={:.3} model={}",
                         out.score,
+                        out.lower_bound,
+                        out.upper_bound,
                         out.threshold,
                         out.model_path.display()
                     ));
                 }
-                if !out.pass {
+                if !out.pass() {
                     eprintln!(
-                        "warning: learned gate score={:.3} below threshold={:.3} (model={})",
+                        "warning: learned gate {} score={:.3} band=[{:.3},{:.3}] threshold={:.3} (model={})",
+                        out.decision,
                         out.score,
+                        out.lower_bound,
+                        out.upper_bound,
                         out.threshold,
                         out.model_path.display()
                     );
@@ -1442,10 +1485,28 @@ re-run with --transcribe + a local whisper.cpp model to generate real subtitles 
         };
 
         let chunks = chunk_audio(&wav_path, &temp_dir, duration, &chunker_config)?;
-        eprintln!(
-            "parallel: {} chunks created, launching {} workers...",
-            chunks.len(),
+
+        // VRAM-aware worker cap: Python whisper loads the full model per-process
+        // (~1.5-3GB for medium/large). Multiple workers on a single GPU cause
+        // VRAM thrashing that drops throughput 5-10x. Cap to 1 worker per GPU,
+        // allow multi-worker only on CPU where RAM is plentiful.
+        let effective_workers = if self.config.gpu {
+            // On GPU: 1 worker gets full VRAM → 60-80fps.
+            // Multiple workers split VRAM → 10-15fps each (net slower).
+            self.config.max_workers.min(1)
+        } else {
             self.config.max_workers
+        };
+
+        eprintln!(
+            "parallel: {} chunks created, launching {} worker(s){}...",
+            chunks.len(),
+            effective_workers,
+            if self.config.gpu && self.config.max_workers > 1 {
+                " (capped to 1 for GPU VRAM efficiency)"
+            } else {
+                ""
+            },
         );
 
         let transcribe_config = Self::make_transcribe_config(&self.config, true);
@@ -1453,17 +1514,47 @@ re-run with --transcribe + a local whisper.cpp model to generate real subtitles 
         let chunk_results = parallel_transcribe(
             &chunks,
             &transcribe_config,
-            self.config.max_workers,
+            effective_workers,
             Some(checkpoint_path),
             events.clone(),
         )
         .map_err(|error| error.to_string())?;
         let merged_cues = stitch_chunks(&chunk_results).map_err(|error| error.to_string())?;
 
+        // Coverage gate: detect catastrophic data loss from chunk timeouts.
+        // If the output cues cover less than a threshold of the total audio
+        // duration, the result is incomplete and shouldn't silently "pass."
+        let failed_chunks = chunk_results.iter().filter(|c| c.cues.is_empty()).count();
+        let total_chunks = chunk_results.len();
+        let coverage_ratio = if total_chunks > 0 {
+            (total_chunks - failed_chunks) as f64 / total_chunks as f64
+        } else {
+            0.0
+        };
+        if coverage_ratio < 0.5 {
+            let msg = format!(
+                "parallel transcription coverage too low: only {}/{} chunks succeeded ({:.0}% coverage). \
+                 This usually means whisper timed out on CPU. Try: (1) install CUDA/Triton for GPU acceleration, \
+                 (2) use whisper.cpp backend (--whisper-bin), or (3) increase chunk duration (--chunk-duration).",
+                total_chunks - failed_chunks, total_chunks, coverage_ratio * 100.0
+            );
+            if self.config.quality_profile == QualityProfile::Strict {
+                return Err(msg);
+            }
+            eprintln!("ERROR: {msg}");
+        } else if failed_chunks > 0 {
+            eprintln!(
+                "warning: {failed_chunks}/{total_chunks} chunks failed ({:.0}% coverage). \
+                 Output may be incomplete. Re-run with --gpu (with CUDA installed) or use whisper.cpp for faster processing.",
+                coverage_ratio * 100.0
+            );
+        }
+
         eprintln!(
-            "parallel: stitched {} total cues from {} chunks",
+            "parallel: stitched {} total cues from {} chunks ({} failed)",
             merged_cues.len(),
-            chunks.len()
+            chunks.len(),
+            failed_chunks,
         );
 
         // Write the raw (untranslated) SRT for the stitch result.
