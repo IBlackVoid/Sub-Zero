@@ -1,0 +1,55 @@
+{
+  "config": {
+    "K": 4,
+    "T": 5000,
+    "seed": 42,
+    "B": 0.6931471805599453,
+    "r_star": 0.15
+  },
+  "results": [
+    {
+      "name": "Oracle",
+      "total_f3_regret": 0.0,
+      "total_cov_regret": 0.0,
+      "arm_distribution": {
+        "0": 0,
+        "1": 0,
+        "2": 5000,
+        "3": 0
+      }
+    },
+    {
+      "name": "Uniform",
+      "total_f3_regret": 373.17999999997477,
+      "total_cov_regret": 341.3736216571089,
+      "arm_distribution": {
+        "0": 1230,
+        "1": 1262,
+        "2": 1232,
+        "3": 1276
+      }
+    },
+    {
+      "name": "EpsGreedy(0.1)",
+      "total_f3_regret": 40.0200000000001,
+      "total_cov_regret": 36.44903790251101,
+      "arm_distribution": {
+        "0": 136,
+        "1": 124,
+        "2": 4610,
+        "3": 130
+      }
+    },
+    {
+      "name": "LFAS-UCB",
+      "total_f3_regret": 153.88999999999845,
+      "total_cov_regret": 148.18841971206376,
+      "arm_distribution": {
+        "0": 330,
+        "1": 1238,
+        "2": 2707,
+        "3": 725
+      }
+    }
+  ]
+}

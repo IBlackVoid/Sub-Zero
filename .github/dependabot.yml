@@ -1,0 +1,70 @@
+# Dependabot configuration — weekly cadence for every ecosystem in
+# the repo. Grouped minor/patch updates so the maintainer reviews one
+# PR per ecosystem per week instead of N small noise PRs.
+#
+# Why these limits exist:
+# - `open-pull-requests-limit` caps churn during a maintainer's quieter
+#   weeks. Five active dep PRs per ecosystem is plenty for a solo
+#   project; more than that and review backs up.
+# - `target-branch` is implicit (default branch) — we deliberately do
+#   not maintain a separate `dev` branch.
+# - `commit-message.prefix` follows the existing commit-message style
+#   ("infra:", "engine:", "tui:" etc) so the history stays readable.
+
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # Pin major bumps to manual review — they often break MSRV.
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      gha-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "pip"
+    directory: "/scripts"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "py-deps"
+      include: "scope"
+    groups:
+      pip-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"

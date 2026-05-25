@@ -1,0 +1,192 @@
+{
+  "schema_version": "1.1",
+  "kind": "learned-gate-feature-audit",
+  "corpus_path": "examples\\f3_case_study_recsys\\corpus.jsonl",
+  "corpus_sha256": "da5f52ed07d17a96b25a2d4c5a64665a9a707017055b659cce87762731f45994",
+  "git_commit": "b41c14aced99cccb20ab9ab7c6c3c443b9b14950",
+  "seed": 42,
+  "leak_threshold": 0.5,
+  "mask_pattern": "none",
+  "mask_features_explicit": [
+    "add_to_cart",
+    "click_dwell_time",
+    "downstream_conversion",
+    "scroll_depth",
+    "subsequent_purchase_amount"
+  ],
+  "mask_resolved": [
+    "add_to_cart",
+    "click_dwell_time",
+    "downstream_conversion",
+    "scroll_depth",
+    "subsequent_purchase_amount"
+  ],
+  "n_rows": 800,
+  "n_pos": 349,
+  "n_neg": 451,
+  "flagged_features": [
+    "scroll_depth",
+    "click_dwell_time",
+    "add_to_cart",
+    "downstream_conversion",
+    "subsequent_purchase_amount"
+  ],
+  "features": [
+    {
+      "name": "scroll_depth",
+      "mi_rich": 0.6856222881938535,
+      "mi_masked": 0.0,
+      "mi_drop": 0.6856222881938535,
+      "leak_score": 1.0,
+      "mi_rich_univariate": 0.6856222881938535,
+      "mi_masked_univariate": 0.010342195023135492,
+      "mi_drop_univariate": 0.675280093170718,
+      "leak_score_univariate": 0.9849156084899455,
+      "masked_by_audit": true
+    },
+    {
+      "name": "click_dwell_time",
+      "mi_rich": 0.6791295242725358,
+      "mi_masked": 0.0,
+      "mi_drop": 0.6791295242725358,
+      "leak_score": 1.0,
+      "mi_rich_univariate": 0.6791295242725358,
+      "mi_masked_univariate": 0.010342195023135492,
+      "mi_drop_univariate": 0.6687873292494003,
+      "leak_score_univariate": 0.9847713953620059,
+      "masked_by_audit": true
+    },
+    {
+      "name": "add_to_cart",
+      "mi_rich": 0.24838298867646813,
+      "mi_masked": 0.0,
+      "mi_drop": 0.24838298867646813,
+      "leak_score": 1.0,
+      "mi_rich_univariate": 0.2677455742338779,
+      "mi_masked_univariate": 0.010342195023135492,
+      "mi_drop_univariate": 0.2574033792107424,
+      "leak_score_univariate": 0.9613730495724216,
+      "masked_by_audit": true
+    },
+    {
+      "name": "downstream_conversion",
+      "mi_rich": 0.22472561382134293,
+      "mi_masked": 0.0,
+      "mi_drop": 0.22472561382134293,
+      "leak_score": 1.0,
+      "mi_rich_univariate": 0.23890595049318453,
+      "mi_masked_univariate": 0.010342195023135492,
+      "mi_drop_univariate": 0.22856375547004903,
+      "leak_score_univariate": 0.9567101823885691,
+      "masked_by_audit": true
+    },
+    {
+      "name": "subsequent_purchase_amount",
+      "mi_rich": 0.22537047814034517,
+      "mi_masked": 0.0,
+      "mi_drop": 0.22537047814034517,
+      "leak_score": 1.0,
+      "mi_rich_univariate": 0.23890595049318453,
+      "mi_masked_univariate": 0.010342195023135492,
+      "mi_drop_univariate": 0.22856375547004903,
+      "leak_score_univariate": 0.9567101823885691,
+      "masked_by_audit": true
+    },
+    {
+      "name": "item_category_match_score",
+      "mi_rich": 0.0783087032615164,
+      "mi_masked": 0.0783087032615164,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.09300601118708518,
+      "mi_masked_univariate": 0.09300601118708518,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "session_dwell_time_so_far",
+      "mi_rich": 0.07143185856641998,
+      "mi_masked": 0.07143185856641998,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.07015027903484072,
+      "mi_masked_univariate": 0.07015027903484072,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "item_popularity_log",
+      "mi_rich": 0.0679137426459353,
+      "mi_masked": 0.0679137426459353,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.06337223594357355,
+      "mi_masked_univariate": 0.06337223594357355,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "user_prior_session_count",
+      "mi_rich": 0.06854220271893685,
+      "mi_masked": 0.06854220271893685,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.062300197578304406,
+      "mi_masked_univariate": 0.062300197578304406,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "user_lifetime_days",
+      "mi_rich": 0.03582840992641012,
+      "mi_masked": 0.03582840992641012,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.04643796469702144,
+      "mi_masked_univariate": 0.04643796469702144,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "user_age_bucket",
+      "mi_rich": 0.02075436100902417,
+      "mi_masked": 0.02075436100902417,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.0322361326880678,
+      "mi_masked_univariate": 0.0322361326880678,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "item_price_bucket",
+      "mi_rich": 0.03886472854654954,
+      "mi_masked": 0.03886472854654954,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.0301791180649833,
+      "mi_masked_univariate": 0.0301791180649833,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    },
+    {
+      "name": "item_freshness_days",
+      "mi_rich": 0.025116955669200358,
+      "mi_masked": 0.025116955669200358,
+      "mi_drop": 0.0,
+      "leak_score": 0.0,
+      "mi_rich_univariate": 0.009994645846735484,
+      "mi_masked_univariate": 0.009994645846735484,
+      "mi_drop_univariate": 0.0,
+      "leak_score_univariate": 0.0,
+      "masked_by_audit": false
+    }
+  ]
+}

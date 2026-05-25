@@ -29,8 +29,8 @@ impl VizMode {
 
 pub struct Viz {
     pub mode: VizMode,
-    emerge_perm: Vec<u32>,
-    emerge_perm_for: Option<String>,
+    emerge_ranks: Vec<u32>,
+    emerge_ranks_for: Option<String>,
     particles: Vec<Particle>,
     canvas: Vec<f32>,
     canvas_w: usize,
@@ -55,8 +55,8 @@ impl Viz {
     pub fn new() -> Self {
         Self {
             mode: VizMode::Original,
-            emerge_perm: Vec::new(),
-            emerge_perm_for: None,
+            emerge_ranks: Vec::new(),
+            emerge_ranks_for: None,
             particles: Vec::new(),
             canvas: Vec::new(),
             canvas_w: 0,
@@ -74,14 +74,21 @@ impl Viz {
     }
 
     pub fn reset_for_run(&mut self) {
-        self.emerge_perm.clear();
-        self.emerge_perm_for = None;
+        self.emerge_ranks.clear();
+        self.emerge_ranks_for = None;
         self.particles.clear();
         self.canvas.fill(0.0);
         self.last_chunks_done = 0;
     }
 
-    pub fn step(&mut self, area_w: u16, area_h: u16, phase: f32, chunks_done: u32, chunks_total: u32) {
+    pub fn step(
+        &mut self,
+        area_w: u16,
+        area_h: u16,
+        phase: f32,
+        chunks_done: u32,
+        chunks_total: u32,
+    ) {
         if self.mode != VizMode::Generative {
             return;
         }
@@ -110,11 +117,19 @@ impl Viz {
 
         if chunks_done > self.last_chunks_done {
             let burst = 16;
-            let corner_x = if (chunks_done % 2) == 0 { 0.0 } else { (dot_w - 1) as f32 };
-            let corner_y = if ((chunks_done / 2) % 2) == 0 { 0.0 } else { (dot_h - 1) as f32 };
+            let corner_x = if chunks_done.is_multiple_of(2) {
+                0.0
+            } else {
+                (dot_w - 1) as f32
+            };
+            let corner_y = if (chunks_done / 2).is_multiple_of(2) {
+                0.0
+            } else {
+                (dot_h - 1) as f32
+            };
             for i in 0..burst {
-                let theta = hash_to_unit(chunks_done.wrapping_mul(7) ^ i as u32, 3)
-                    * std::f32::consts::TAU;
+                let theta =
+                    hash_to_unit(chunks_done.wrapping_mul(7) ^ i as u32, 3) * std::f32::consts::TAU;
                 self.particles.push(Particle {
                     x: corner_x + theta.cos() * 2.0,
                     y: corner_y + theta.sin() * 2.0,
@@ -174,9 +189,14 @@ impl Viz {
             return ('\u{2800}', 0.0);
         }
         const DOT_BITS: [(usize, usize, u8); 8] = [
-            (0, 0, 0), (0, 1, 1), (0, 2, 2),
-            (1, 0, 3), (1, 1, 4), (1, 2, 5),
-            (0, 3, 6), (1, 3, 7),
+            (0, 0, 0),
+            (0, 1, 1),
+            (0, 2, 2),
+            (1, 0, 3),
+            (1, 1, 4),
+            (1, 2, 5),
+            (0, 3, 6),
+            (1, 3, 7),
         ];
         let mut bits = 0u8;
         let mut total = 0.0_f32;
@@ -202,49 +222,41 @@ impl Viz {
     }
 
     pub fn ensure_emerge_perm(&mut self, key: &str, n: u32) {
-        if self.emerge_perm_for.as_deref() != Some(key)
-            || self.emerge_perm.len() as u32 != n
-        {
-            self.emerge_perm = permutation_for(key, n);
-            self.emerge_perm_for = Some(key.to_string());
+        if self.emerge_ranks_for.as_deref() == Some(key) && self.emerge_ranks.len() as u32 == n {
+            return;
         }
+
+        let mut ranks = vec![0; n as usize];
+        for (rank, cell_index) in permutation_for(key, n).into_iter().enumerate() {
+            ranks[cell_index as usize] = rank as u32;
+        }
+        self.emerge_ranks = ranks;
+        self.emerge_ranks_for = Some(key.to_string());
     }
 
     pub fn emerge_visible(&self, cell_index: usize, progress: f32) -> bool {
-        if self.emerge_perm.is_empty() {
+        if self.emerge_ranks.is_empty() {
             return true;
         }
-        let threshold = (progress.clamp(0.0, 1.0) * self.emerge_perm.len() as f32) as u32;
-        let h = mix_u32(cell_index as u32 ^ self.emerge_perm_seed());
-        let rank = h % self.emerge_perm.len() as u32;
-        rank < threshold
-    }
-
-    fn emerge_perm_seed(&self) -> u32 {
-        match self.emerge_perm_for.as_deref() {
-            Some(k) => {
-                let mut s: u32 = 0x9E37_79B9;
-                for b in k.as_bytes() {
-                    s = s.wrapping_mul(31).wrapping_add(*b as u32);
-                }
-                s
-            }
-            None => 0,
-        }
+        let Some(rank) = self.emerge_ranks.get(cell_index) else {
+            return false;
+        };
+        let threshold = (progress.clamp(0.0, 1.0) * self.emerge_ranks.len() as f32) as u32;
+        *rank < threshold
     }
 }
 
 fn sample_field(x: f32, y: f32, phase: f32, w: f32, h: f32) -> (f32, f32) {
     let nx = x / w * std::f32::consts::TAU;
     let ny = y / h * std::f32::consts::TAU;
-    let theta = (nx * 1.2 + phase).sin()
-        + (ny * 1.8 - phase * 0.7).cos()
-        + (phase * 0.3).sin();
+    let theta = (nx * 1.2 + phase).sin() + (ny * 1.8 - phase * 0.7).cos() + (phase * 0.3).sin();
     (theta.cos() * 0.7, theta.sin() * 0.7)
 }
 
 fn hash_to_unit(seed: u32, stream: u32) -> f32 {
-    let mut h = seed.wrapping_mul(2_654_435_761).wrapping_add(stream.wrapping_mul(40_503));
+    let mut h = seed
+        .wrapping_mul(2_654_435_761)
+        .wrapping_add(stream.wrapping_mul(40_503));
     h ^= h.wrapping_shr(15);
     h = h.wrapping_mul(0x85ebca6b);
     h ^= h.wrapping_shr(13);
@@ -258,9 +270,7 @@ pub fn permutation_for(key: &str, n: u32) -> Vec<u32> {
     for b in key.as_bytes() {
         seed = seed.wrapping_mul(31).wrapping_add(*b as u32);
     }
-    let mut items: Vec<(u32, u32)> = (0..n)
-        .map(|i| (i, mix_u32(i ^ seed)))
-        .collect();
+    let mut items: Vec<(u32, u32)> = (0..n).map(|i| (i, mix_u32(i ^ seed))).collect();
     items.sort_by_key(|(_, k)| *k);
     items.into_iter().map(|(i, _)| i).collect()
 }
@@ -340,9 +350,7 @@ mod tests {
     fn emerge_visible_grows_with_progress() {
         let mut v = Viz::new();
         v.ensure_emerge_perm("input.srt", 1000);
-        let count_at = |p: f32| -> usize {
-            (0..1000).filter(|i| v.emerge_visible(*i, p)).count()
-        };
+        let count_at = |p: f32| -> usize { (0..1000).filter(|i| v.emerge_visible(*i, p)).count() };
         assert!(count_at(0.0) < count_at(0.5));
         assert!(count_at(0.5) < count_at(1.0));
         assert!(count_at(1.0) >= 950);

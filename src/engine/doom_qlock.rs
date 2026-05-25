@@ -7,6 +7,7 @@ mod probe;
 mod util;
 
 use crate::engine::deep_scan::{scan_input, DeepScanConfig};
+use crate::engine::lfas::{self, F3Sample, LfasConfig, LfasScheduler};
 use crate::engine::pipeline::PipelineConfig;
 pub use error::DoomQlockError;
 use error::DoomQlockResult;
@@ -23,11 +24,18 @@ use util::{
     now_epoch_secs,
 };
 
+/// Number of LFAS arms: one per `QualityProfile` variant (Fast, Balanced, Strict).
+const LFAS_ARMS: usize = 3;
+
 #[derive(Debug, Clone)]
 pub struct DoomQlock {
     history_path: PathBuf,
     knowledge_path: PathBuf,
     history: HistoryStore,
+    /// F.4 Label-Free Adaptive Scheduler. Tracks quality-profile arms
+    /// via F.3 counterfactual MI and provides coverage-regret guarantees
+    /// (Theorems 1-3 in `docs/F4_lfas.md`).
+    lfas: LfasScheduler<LFAS_ARMS>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +65,7 @@ impl DoomQlock {
             history_path,
             knowledge_path,
             history,
+            lfas: LfasScheduler::new(LfasConfig::default()),
         }
     }
 
@@ -86,9 +95,9 @@ impl DoomQlock {
             );
         }
         let workload = WorkloadEstimate::probe(input, &base_config.source_lang, deep_scan.as_ref())
-            .map_err(|source| DoomQlockError::WorkloadProbe {
+            .map_err(|message| DoomQlockError::WorkloadProbe {
                 input: input.to_path_buf(),
-                source,
+                message,
             })?;
         let device_fingerprint = hardware.fingerprint();
         let content_profile_hash = deep_scan
@@ -152,11 +161,16 @@ impl DoomQlock {
         };
 
         plan.validate_and_adjust(base_config, &hardware)
-            .map_err(|source| DoomQlockError::PlanValidation {
+            .map_err(|message| DoomQlockError::PlanValidation {
                 input: input.to_path_buf(),
-                source,
+                message,
             })?;
         let effective_config = plan.apply_to_config(base_config);
+
+        // F.4 LFAS: log the scheduler's quality recommendation and coverage floor.
+        let lfas_arm = self.lfas.pick_arm();
+        let lfas_floor = self.lfas.coverage_floor(0.10);
+        let lfas_summary = self.lfas.summary();
 
         eprintln!(
             "ibvoid-doom-qlock: plan source={} parallel={} workers={} chunk={:.0}s mt_batch={} mt_tokens={} mt_oom_retries={} cpu_fallback={}",
@@ -173,6 +187,13 @@ impl DoomQlock {
                 "off"
             }
         );
+        eprintln!(
+            "ibvoid-doom-qlock: lfas arm={} coverage_floor={:.3} regret={:.1} best_delta_i={:.3}",
+            lfas_arm.0,
+            lfas_floor,
+            lfas_summary.estimated_regret,
+            lfas_summary.best_mean_delta_i,
+        );
 
         Ok(PreparedRun {
             effective_config,
@@ -184,7 +205,56 @@ impl DoomQlock {
         })
     }
 
+    /// Feed an F.3 audit sample back to the LFAS scheduler.
+    ///
+    /// Call this after the F.3 audit runs on a processed chunk (typically
+    /// every `audit_period`-th chunk — check `lfas_should_audit`). The
+    /// quality profile of the prepared run determines which arm receives
+    /// the feedback.
+    pub fn record_f3_audit(&mut self, prepared: &PreparedRun, sample: F3Sample) {
+        let arm = lfas::ArmId(quality_profile_to_arm(prepared.effective_config.quality_profile));
+        self.lfas.record(arm, Some(sample));
+    }
+
+    /// Whether the LFAS scheduler wants an F.3 audit on this chunk.
+    pub fn lfas_should_audit(&self) -> bool {
+        self.lfas.should_audit()
+    }
+
+    /// Current LFAS coverage floor (Theorem 3). For structured logging.
+    pub fn lfas_coverage_floor(&self, alpha: f64) -> f64 {
+        self.lfas.coverage_floor(alpha)
+    }
+
+    /// Get the LFAS-recommended quality profile.
+    ///
+    /// Returns `Some(profile)` if LFAS has enough data to make a
+    /// recommendation (past the initial exploration phase). Returns
+    /// `None` if LFAS is still exploring or has no observations.
+    pub fn lfas_recommended_profile(
+        &self,
+    ) -> Option<crate::engine::transcribe::QualityProfile> {
+        use crate::engine::transcribe::QualityProfile;
+        let arm = self.lfas.pick_arm();
+        let summary = self.lfas.summary();
+        // Only override if past exploration phase (each arm pulled at least once).
+        if summary.arm_pulls.iter().all(|&n| n > 0) {
+            Some(match arm.0 {
+                0 => QualityProfile::Fast,
+                1 => QualityProfile::Balanced,
+                _ => QualityProfile::Strict,
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn record_success(&mut self, prepared: &PreparedRun, output: &Path, elapsed_secs: f64) {
+        // Advance the LFAS step counter (no F.3 sample — that comes via
+        // `record_f3_audit` when the audit actually runs).
+        let arm = lfas::ArmId(quality_profile_to_arm(prepared.effective_config.quality_profile));
+        self.lfas.record(arm, None);
+
         let health = assess_output_health(output).ok();
         let record = RunRecord {
             timestamp_epoch_secs: now_epoch_secs(),
@@ -283,6 +353,19 @@ impl DoomQlock {
                 error
             );
         }
+    }
+}
+
+/// Map a `QualityProfile` to an LFAS arm index.
+///
+/// The mapping is deterministic and exhaustive — every profile variant
+/// maps to exactly one arm in `[0, LFAS_ARMS)`.
+fn quality_profile_to_arm(profile: crate::engine::transcribe::QualityProfile) -> usize {
+    use crate::engine::transcribe::QualityProfile;
+    match profile {
+        QualityProfile::Fast => 0,
+        QualityProfile::Balanced => 1,
+        QualityProfile::Strict => 2,
     }
 }
 

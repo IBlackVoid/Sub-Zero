@@ -1,0 +1,8 @@
+interface:
+  display_name: "IBVoid Security Review"
+  short_description: "Threat model and harden changes"
+  brand_color: "#DC2626"
+  default_prompt: "Use $ibvoid-security-review to threat model and harden this work."
+
+policy:
+  allow_implicit_invocation: true

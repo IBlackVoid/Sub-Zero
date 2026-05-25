@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Workspace task runner — `cargo xtask <cmd>`. Internal tooling only."
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+# xtask is intentionally dep-free. The whole point is "run the same
+# verification steps on every developer's box and on every CI runner
+# without taking on a yak-shave of crates." Keep it std-only.
+[dependencies]

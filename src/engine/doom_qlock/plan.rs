@@ -262,9 +262,9 @@ impl ExecutionPlan {
         let batch = self
             .mt_batch_size
             .unwrap_or_else(|| default_mt_batch_for_profile(profile)) as u64;
-        let tokens = self
-            .mt_max_batch_tokens
-            .unwrap_or_else(|| default_mt_max_tokens_for_profile(profile)) as u64;
+        let tokens =
+            self.mt_max_batch_tokens
+                .unwrap_or_else(|| default_mt_max_tokens_for_profile(profile)) as u64;
         2_048 + (batch * 180) + (tokens / 2)
     }
 

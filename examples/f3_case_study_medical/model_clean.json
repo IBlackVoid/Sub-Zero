@@ -1,0 +1,161 @@
+{
+  "version": "2.0",
+  "kind": "learned-quality-gate",
+  "model_kind": "logistic+isotonic+conformal",
+  "threshold": 0.5,
+  "bias": 1.5389126574491458,
+  "features": [
+    "age",
+    "sex",
+    "systolic_bp",
+    "heart_rate",
+    "oxygen_saturation",
+    "glasgow_coma_scale",
+    "admission_complaint_severity",
+    "comorbidity_count"
+  ],
+  "mean": [
+    52.48,
+    0.5028571428571429,
+    120.64,
+    86.30857142857143,
+    91.14571428571429,
+    11.637142857142857,
+    3.117142857142857,
+    1.7857142857142858
+  ],
+  "std": [
+    11.929478494169686,
+    0.49999183666805413,
+    12.927781822770017,
+    9.862580694685528,
+    3.9898329973745446,
+    2.1427066613829036,
+    1.6179326693187766,
+    1.1525481972302818
+  ],
+  "weights": [
+    -0.15815752002923733,
+    0.20777502645826837,
+    0.11997902470114337,
+    0.09267757230989128,
+    0.4760443299380869,
+    0.4860982166160311,
+    -0.19773167636730188,
+    -0.13287000233194027
+  ],
+  "calibration": {
+    "kind": "isotonic",
+    "x": [
+      0.21687604824766696,
+      0.6771536302529795,
+      0.6944079918172341,
+      0.7591901729611078,
+      0.7626479490597642,
+      0.8210215064728122,
+      0.8313798504460266,
+      0.9297158760761801,
+      0.9387892111653846,
+      0.9797288482180877
+    ],
+    "y": [
+      0.5384615384615384,
+      0.5384615384615384,
+      0.6666666666666666,
+      0.6666666666666666,
+      0.75,
+      0.75,
+      0.875,
+      0.875,
+      1.0,
+      1.0
+    ],
+    "out_of_bounds": "clip"
+  },
+  "conformal": {
+    "alpha": 0.1,
+    "q_hat": 0.5384615384615384,
+    "calibration_set_size": 50,
+    "isotonic_cal_set_size": 50,
+    "split_kind": "disjoint_iso_and_conf",
+    "interpretation": "PASS if p_cal - q_hat > threshold; REJECT if p_cal + q_hat < threshold; ABSTAIN otherwise."
+  },
+  "holdout_metrics": {
+    "crisp_acc": 0.76,
+    "crisp_precision": 0.76,
+    "crisp_recall": 1.0,
+    "crisp_f1": 0.8636363636363636,
+    "crisp_f1_bootstrap_ci95": [
+      0.7804878048780488,
+      0.9361702127659575
+    ],
+    "conformal_test": {
+      "n": 50,
+      "pass": 0,
+      "reject": 0,
+      "abstain": 50,
+      "abstain_rate": 1.0,
+      "coverage": 1.0,
+      "decisive_accuracy": null
+    },
+    "conformal_calibration_selfcheck": {
+      "n": 50,
+      "pass": 0,
+      "reject": 0,
+      "abstain": 50,
+      "abstain_rate": 1.0,
+      "coverage": 1.0,
+      "decisive_accuracy": null
+    },
+    "alpha_sweep": [
+      {
+        "alpha": 0.1,
+        "q_hat": 0.5384615384615384,
+        "test_coverage": 1.0,
+        "test_abstain_rate": 1.0,
+        "test_decisive_accuracy": null,
+        "test_pass": 0,
+        "test_reject": 0,
+        "test_abstain": 50
+      },
+      {
+        "alpha": 0.3,
+        "q_hat": 0.46153846153846156,
+        "test_coverage": 1.0,
+        "test_abstain_rate": 0.94,
+        "test_decisive_accuracy": 1.0,
+        "test_pass": 3,
+        "test_reject": 0,
+        "test_abstain": 47
+      },
+      {
+        "alpha": 0.5,
+        "q_hat": 0.31523839477257276,
+        "test_coverage": 0.94,
+        "test_abstain_rate": 0.42,
+        "test_decisive_accuracy": 0.896551724137931,
+        "test_pass": 29,
+        "test_reject": 0,
+        "test_abstain": 21
+      }
+    ]
+  },
+  "holdout_size": 50,
+  "training_seed": 42,
+  "data_sha256": "27e177df98462bf2886b7cb29893b1fcc8ef8d428a399a319ef7ebc6bed3551f",
+  "git_commit": "b41c14aced99cccb20ab9ab7c6c3c443b9b14950",
+  "training_set_size": 350,
+  "exclude_delta_features": false,
+  "feature_audit": {
+    "path": "examples\\f3_case_study_medical\\feature_audit.json",
+    "sha256": "4b769070577f12db20d7842c1f1834fdbb3b71815f1da707bb07c55118603cd6",
+    "flagged_features": [
+      "icu_days",
+      "intubated_within_24h",
+      "max_inflammatory_marker",
+      "max_pressor_dose",
+      "peak_lactate_24h"
+    ],
+    "leak_threshold": 0.5
+  }
+}

@@ -1,11 +1,10 @@
-mod engine;
-
-use engine::doom_qlock::DoomQlock;
-use engine::http_sidecar::{start_http_sidecar, HttpSidecarConfig};
-use engine::pipeline::{PipelineConfig, SubtitlePipeline};
-use engine::transcribe::QualityProfile;
-use engine::ws_sidecar::{start_ws_sidecar, WsSidecarConfig};
 use std::path::PathBuf;
+
+use sub_zero::engine::doom_qlock::DoomQlock;
+use sub_zero::engine::http_sidecar::{start_http_sidecar, HttpSidecarConfig};
+use sub_zero::engine::pipeline::{PipelineConfig, SubtitlePipeline};
+use sub_zero::engine::transcribe::QualityProfile;
+use sub_zero::engine::ws_sidecar::{start_ws_sidecar, WsSidecarConfig};
 
 #[derive(Debug, Clone)]
 struct Args {
@@ -48,11 +47,13 @@ struct Args {
     mt_enforce_quality_floor: bool,
     auto_repair_sidecar: bool,
     doom_qlock: bool,
+    lfas_control: bool,
     trace_runtime: bool,
     events_json: bool,
     events_file: Option<PathBuf>,
     http_events_addr: Option<String>,
     ws_events_addr: Option<String>,
+    allow_remote_events: bool,
     quality_profile: QualityProfile,
 }
 
@@ -75,6 +76,7 @@ fn run() -> Result<(), String> {
     let http_events = if let Some(addr) = args.http_events_addr.as_deref() {
         let handle = start_http_sidecar(HttpSidecarConfig {
             bind_addr: addr.to_string(),
+            allow_remote: args.allow_remote_events,
         })?;
         Some(handle.events_tx)
     } else {
@@ -83,6 +85,7 @@ fn run() -> Result<(), String> {
     let ws_events = if let Some(addr) = args.ws_events_addr.as_deref() {
         let handle = start_ws_sidecar(WsSidecarConfig {
             bind_addr: addr.to_string(),
+            allow_remote: args.allow_remote_events,
         })?;
         Some(handle.events_tx)
     } else {
@@ -151,10 +154,24 @@ fn run() -> Result<(), String> {
             None
         };
 
-        let effective_config = prepared
+        let mut effective_config = prepared
             .as_ref()
             .map(|run| run.effective_config.clone())
             .unwrap_or_else(|| base_config.clone());
+
+        // F.4 LFAS control: when --lfas-control is set and the scheduler has
+        // enough data, override the quality profile with LFAS's recommendation.
+        if args.lfas_control {
+            if let Some(qlock) = doom_qlock.as_ref() {
+                if let Some(profile) = qlock.lfas_recommended_profile() {
+                    eprintln!(
+                        "ibvoid-lfas: overriding quality profile to {} (LFAS recommendation)",
+                        profile.as_str()
+                    );
+                    effective_config.quality_profile = profile;
+                }
+            }
+        }
 
         let emit_events_json = effective_config.events_json;
         if emit_events_json {
@@ -261,11 +278,13 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
     let mut mt_enforce_quality_floor = true;
     let mut auto_repair_sidecar = true;
     let mut doom_qlock = true;
+    let mut lfas_control = false;
     let mut trace_runtime = false;
     let mut events_json = false;
     let mut events_file = Option::<PathBuf>::None;
     let mut http_events_addr = Option::<String>::None;
     let mut ws_events_addr = Option::<String>::None;
+    let mut allow_remote_events = false;
     let mut quality_profile = QualityProfile::Balanced;
 
     let mut index = 0usize;
@@ -349,12 +368,20 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
                 doom_qlock = false;
                 index += 1;
             }
+            "--lfas-control" => {
+                lfas_control = true;
+                index += 1;
+            }
             "--trace-runtime" => {
                 trace_runtime = true;
                 index += 1;
             }
             "--events-json" => {
                 events_json = true;
+                index += 1;
+            }
+            "--allow-remote-events" => {
+                allow_remote_events = true;
                 index += 1;
             }
             "--http-events" => {
@@ -705,11 +732,13 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
         mt_enforce_quality_floor,
         auto_repair_sidecar,
         doom_qlock,
+        lfas_control,
         trace_runtime,
         events_json,
         events_file,
         http_events_addr,
         ws_events_addr,
+        allow_remote_events,
         quality_profile,
     })
 }
@@ -768,6 +797,7 @@ fn help_text() -> String {
         "  --events-file <path>    Append JSON-lines events to a file (requires --events-json)",
         "  --http-events <addr>    Start local HTTP sidecar (SSE) at addr; enables --events-json",
         "  --ws-events <addr>      Start local WebSocket sidecar at addr (path /ws); enables --events-json",
+        "  --allow-remote-events   Allow HTTP/WS event sidecars to bind non-loopback addresses",
         "  --no-auto-repair-sidecar  Disable automatic rescue transcription when sidecar SRT looks degraded",
         "",
         "Audio/VAD:",
@@ -1047,5 +1077,15 @@ mod tests {
         .expect("parse should succeed");
         assert!(args.events_json);
         assert_eq!(args.ws_events_addr, Some("127.0.0.1:9412".to_string()));
+    }
+
+    #[test]
+    fn parse_allow_remote_events_flag() {
+        let args = parse_args(vec![
+            "video.mkv".to_string(),
+            "--allow-remote-events".to_string(),
+        ])
+        .expect("parse should succeed");
+        assert!(args.allow_remote_events);
     }
 }

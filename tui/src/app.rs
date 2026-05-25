@@ -26,16 +26,20 @@ use ratatui::{
 
 use crate::animation::{Animation, AnimationError};
 use crate::audio::AudioPlayer;
-use crate::digests;
 use crate::easter_egg::{self, EasterEgg};
-use crate::engine::{locate_engine_binary, EngineConfig, EngineRunner};
+use crate::engine::{EngineConfig, EngineRunner};
+use crate::paths::{
+    canonical_output_path, read_srt_preview, resolve_write_target, sanitize_path_input,
+    tail_srt_cues, tui_write_root,
+};
 use crate::recents::Recents;
-use crate::secret;
+use crate::slots;
+use crate::theme::{brighten, lerp_color, palette, theme_accent};
+
+mod input;
 
 const DEFAULT_ASSET_DIR: &str = "assets/ascii";
-const STATES: &[&str] = &[
-    "idle", "running", "victory", "warning", "error", "complete",
-];
+const STATES: &[&str] = &["idle", "running", "victory", "warning", "error", "complete"];
 /// Animation shown on first launch / when returning to Greeting.
 /// User asked for the second slot (running = anime-haruhi.gif).
 const GREETING_DEFAULT_STATE: &str = "running";
@@ -43,69 +47,12 @@ const GREETING_DEFAULT_STATE: &str = "running";
 const LANGS: &[&str] = &["ja", "en", "ko", "zh", "es", "fr", "de", "ru", "ar", "auto"];
 const PROFILES: &[&str] = &["fast", "balanced", "strict"];
 
-mod palette {
-    use ratatui::style::Color;
-    pub const ACCENT:   Color = Color::Rgb(0xd0, 0x68, 0x20);
-    pub const ACCENT_2: Color = Color::Rgb(0xe0, 0x98, 0x20);
-    pub const PINK:     Color = Color::Rgb(0xc0, 0x30, 0x70);
-    pub const GREEN:    Color = Color::Rgb(0x50, 0xc8, 0x70);
-    pub const RED:      Color = Color::Rgb(0xc0, 0x50, 0x50);
-    pub const TEXT:     Color = Color::Rgb(0xd0, 0xd0, 0xd0);
-    pub const MUTED:    Color = Color::Rgb(0x60, 0x60, 0x60);
-    pub const FAINT:    Color = Color::Rgb(0x32, 0x32, 0x32);
-}
-
-/// Brighten a colour toward white by ~30%. Used for the theme-switch
-/// flash; returns the original colour for non-RGB variants.
-fn brighten(c: ratatui::style::Color) -> ratatui::style::Color {
-    use ratatui::style::Color;
-    match c {
-        Color::Rgb(r, g, b) => Color::Rgb(
-            r.saturating_add((255 - r) / 3),
-            g.saturating_add((255 - g) / 3),
-            b.saturating_add((255 - b) / 3),
-        ),
-        other => other,
-    }
-}
-
-/// Linear-interpolate two RGB colours by `t` in [0, 1]. Non-RGB inputs
-/// fall back to `a` (we can't easily mix indexed/named colours).
-fn lerp_color(a: ratatui::style::Color, b: ratatui::style::Color, t: f32) -> ratatui::style::Color {
-    use ratatui::style::Color;
-    let mix = |x: u8, y: u8| -> u8 {
-        (x as f32 + (y as f32 - x as f32) * t).clamp(0.0, 255.0) as u8
-    };
-    match (a, b) {
-        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
-            Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
-        }
-        (a, _) => a,
-    }
-}
-
-/// Theme-driven accent colour for the animation frame border and the
-/// title bar's signature glyph. Each theme picks a single bold tone
-/// so the visual change is immediate and unambiguous; the rest of the
-/// chrome stays on the base palette so contrast doesn't collapse.
-fn theme_accent(theme: crate::easter_egg::Theme) -> ratatui::style::Color {
-    use crate::easter_egg::Theme as T;
-    use ratatui::style::Color;
-    match theme {
-        T::Default          => palette::FAINT,
-        T::MrRobot          => Color::Rgb(0xff, 0x14, 0x14), // fsociety red
-        T::SynthwavePurple  => Color::Rgb(0xff, 0x4d, 0xff), // hot magenta
-        T::AmberCrt         => Color::Rgb(0xff, 0xb0, 0x00), // amber phosphor
-        T::KeimaBlue        => Color::Rgb(0x59, 0xa6, 0xff), // cool ice blue
-    }
-}
-
 /// Top-level screen the app is currently showing.
 enum Screen {
     Greeting,
     Picker(PickerState),
     Configure(ConfigureState),
-    Running(RunningState),
+    Running(Box<RunningState>),
     Result(ResultState),
 }
 
@@ -137,20 +84,20 @@ impl ConfigField {
         match self {
             Self::SourceLang => Self::TargetLang,
             Self::TargetLang => Self::Profile,
-            Self::Profile    => Self::Gpu,
-            Self::Gpu        => Self::Workers,
-            Self::Workers    => Self::Start,
-            Self::Start      => Self::SourceLang,
+            Self::Profile => Self::Gpu,
+            Self::Gpu => Self::Workers,
+            Self::Workers => Self::Start,
+            Self::Start => Self::SourceLang,
         }
     }
     fn prev(self) -> Self {
         match self {
             Self::SourceLang => Self::Start,
             Self::TargetLang => Self::SourceLang,
-            Self::Profile    => Self::TargetLang,
-            Self::Gpu        => Self::Profile,
-            Self::Workers    => Self::Gpu,
-            Self::Start      => Self::Workers,
+            Self::Profile => Self::TargetLang,
+            Self::Gpu => Self::Profile,
+            Self::Workers => Self::Gpu,
+            Self::Start => Self::Workers,
         }
     }
 }
@@ -290,7 +237,9 @@ impl App {
             self.audio_envelope = None;
             return;
         };
-        let Some(anim) = self.pack.get(&self.current_state_name) else { return; };
+        let Some(anim) = self.pack.get(&self.current_state_name) else {
+            return;
+        };
         match &anim.audio_path {
             Some(p) => {
                 audio.play(p);
@@ -304,12 +253,16 @@ impl App {
     }
 
     fn current_anim_has_audio(&self) -> bool {
-        self.pack.get(&self.current_state_name)
+        self.pack
+            .get(&self.current_state_name)
             .and_then(|a| a.audio_path.as_ref())
             .is_some()
     }
     fn cycle_anim(&mut self, delta: i32) {
-        let cur = STATES.iter().position(|s| *s == self.current_state_name).unwrap_or(0);
+        let cur = STATES
+            .iter()
+            .position(|s| *s == self.current_state_name)
+            .unwrap_or(0);
         let n = STATES.len() as i32;
         let next = ((cur as i32 + delta).rem_euclid(n)) as usize;
         let target = STATES[next].to_string();
@@ -317,7 +270,8 @@ impl App {
         self.force_anim(&target);
     }
     fn current_anim(&self) -> &Animation {
-        self.pack.get(&self.current_state_name)
+        self.pack
+            .get(&self.current_state_name)
             .or_else(|| self.pack.values().next())
             .expect("at least one animation must be loaded")
     }
@@ -326,17 +280,31 @@ impl App {
         if anim.frames.is_empty() {
             return;
         }
+        // Reduced-motion: pin to the last frame and stop advancing. The
+        // easter-egg trigger still fires; it just lands on its final
+        // pose instead of playing the loop. See `accessibility.rs`.
+        if crate::accessibility::Accessibility::from_env().reduced_motion {
+            let last = anim.frames.len() - 1;
+            if self.frame_idx != last {
+                self.frame_idx = last;
+                self.last_advance = Instant::now();
+            }
+            return;
+        }
         // Drive frame selection by wall-clock elapsed since the loop
         // started. This naturally syncs the visuals to the audio
         // sink — both run on real time, neither blocks the other —
         // and recovers gracefully if a redraw skipped a tick.
         let total_ms = anim.total_duration_ms.max(1);
-        let elapsed_ms = (self.loop_started.elapsed().as_millis() as u64)
-            % total_ms;
+        let elapsed_ms = (self.loop_started.elapsed().as_millis() as u64) % total_ms;
         let mut acc = 0u64;
         let mut idx = 0usize;
         for (i, frame) in anim.frames.iter().enumerate() {
-            let d = if frame.delay_ms == 0 { 80 } else { frame.delay_ms as u64 };
+            let d = if frame.delay_ms == 0 {
+                80
+            } else {
+                frame.delay_ms as u64
+            };
             acc += d;
             if acc > elapsed_ms {
                 idx = i;
@@ -408,14 +376,14 @@ impl App {
         Ok(injected)
     }
 
-    /// Try every known digest against the given phrase. On any match
-    /// the corresponding slot is decrypted and stitched into the
-    /// app's animation pack. Returns the human-facing message to
-    /// display in the ex-line area after Enter.
+    /// Try each encrypted slot with the given phrase. On any successful
+    /// authenticated decrypt, the slot is stitched into the app's
+    /// animation pack. Returns the human-facing message to display in
+    /// the ex-line area after Enter.
     fn try_unlock_phrase(&mut self, phrase: &str) -> String {
         // Public ex-line commands (not secrets): help, snap. Recognised
-        // before the SHA-256 verification so an unlucky collision can
-        // never gate them.
+        // before slot unlock attempts so an asset phrase can never gate
+        // ordinary commands.
         if phrase == "help" {
             self.help_overlay = true;
             return "showing help".to_string();
@@ -433,45 +401,37 @@ impl App {
         if let Some(rest) = phrase.strip_prefix("save ") {
             return self.save_output_as(rest.trim());
         }
-        if secret::verify(phrase, &digests::DIGEST_1) {
+        if let Some(slot) = easter_egg::try_unlock(Path::new(slots::DIR_1), phrase) {
             if self.easter.panel.is_none() {
-                let dir = Path::new(digests::DIR_1);
-                if let Some(slot) = easter_egg::try_unlock(dir, phrase) {
-                    let tag = "a".to_string();
-                    match self.materialise_slot(&slot, &tag) {
-                        Ok(_keys) => {
-                            self.easter.panel = Some(slot);
-                            self.easter.panel_open = true;
-                            self.panel_opened_at = Some(Instant::now());
-                            return "panel unlocked".to_string();
-                        }
-                        Err(_) => return "unlock failed: asset error".to_string(),
+                let tag = "a".to_string();
+                match self.materialise_slot(&slot, &tag) {
+                    Ok(_keys) => {
+                        self.easter.panel = Some(slot);
+                        self.easter.panel_open = true;
+                        self.panel_opened_at = Some(Instant::now());
+                        return "panel unlocked".to_string();
                     }
+                    Err(_) => return "unlock failed: asset error".to_string(),
                 }
-                return "unlock failed: manifest missing or corrupt".to_string();
             }
             self.easter.panel_open = true;
             self.panel_opened_at = Some(Instant::now());
             return "panel already unlocked".to_string();
         }
-        if secret::verify(phrase, &digests::DIGEST_2) {
+        if let Some(slot) = easter_egg::try_unlock(Path::new(slots::DIR_2), phrase) {
             if self.easter.solo.is_none() {
-                let dir = Path::new(digests::DIR_2);
-                if let Some(slot) = easter_egg::try_unlock(dir, phrase) {
-                    let tag = "b".to_string();
-                    match self.materialise_slot(&slot, &tag) {
-                        Ok(keys) => {
-                            self.easter.solo = Some(slot);
-                            if let Some(first) = keys.first() {
-                                let name = first.clone();
-                                self.force_anim(&name);
-                            }
-                            return "solo unlocked".to_string();
+                let tag = "b".to_string();
+                match self.materialise_slot(&slot, &tag) {
+                    Ok(keys) => {
+                        self.easter.solo = Some(slot);
+                        if let Some(first) = keys.first() {
+                            let name = first.clone();
+                            self.force_anim(&name);
                         }
-                        Err(_) => return "unlock failed: asset error".to_string(),
+                        return "solo unlocked".to_string();
                     }
+                    Err(_) => return "unlock failed: asset error".to_string(),
                 }
-                return "unlock failed: manifest missing or corrupt".to_string();
             }
             // Already unlocked — just switch back to the solo animation.
             if let Some(_slot) = self.easter.solo.as_ref() {
@@ -530,8 +490,7 @@ impl App {
         }
         // Bound the arrivals map so a long run doesn't leak; we only
         // need indices that are still visible in the preview window.
-        let keep: std::collections::HashSet<u32> =
-            fresh.iter().map(|(i, _)| *i).collect();
+        let keep: std::collections::HashSet<u32> = fresh.iter().map(|(i, _)| *i).collect();
         self.new_cue_arrivals.retain(|k, _| keep.contains(k));
         self.cue_preview_cache = fresh;
     }
@@ -541,9 +500,7 @@ impl App {
     /// path has no directory component). Output is raw braille glyphs,
     /// one line per row — paste-able anywhere that understands UTF-8.
     fn save_output_as(&mut self, target: &str) -> String {
-        if target.is_empty() {
-            return "save: path required".to_string();
-        }
+        let cleaned = sanitize_path_input(target);
         let src = match &self.screen {
             Screen::Result(rs) => rs.output_files.first().cloned(),
             _ => None,
@@ -551,7 +508,11 @@ impl App {
         let Some(src) = src else {
             return "save: no output to copy".to_string();
         };
-        let dst = std::path::PathBuf::from(sanitize_path_input(target));
+        let root = tui_write_root();
+        let dst = match resolve_write_target(&cleaned, &root) {
+            Ok(p) => p,
+            Err(e) => return format!("save: {e}"),
+        };
         match std::fs::copy(&src, &dst) {
             Ok(_) => format!("saved → {}", dst.display()),
             Err(e) => format!("save failed: {e}"),
@@ -564,9 +525,7 @@ impl App {
             return "snap: no frame to capture".to_string();
         }
         let frame = &anim.frames[self.frame_idx.min(anim.frames.len() - 1)];
-        let mut out = String::with_capacity(
-            (frame.width as usize + 1) * frame.height as usize,
-        );
+        let mut out = String::with_capacity((frame.width as usize + 1) * frame.height as usize);
         for row in 0..frame.height as usize {
             for col in 0..frame.width as usize {
                 let i = row * frame.width as usize + col;
@@ -578,7 +537,11 @@ impl App {
             }
             out.push('\n');
         }
-        let path = std::path::PathBuf::from(path_hint);
+        let root = tui_write_root();
+        let path = match resolve_write_target(path_hint, &root) {
+            Ok(p) => p,
+            Err(e) => return format!("snap: {e}"),
+        };
         match std::fs::write(&path, out) {
             Ok(()) => format!("snap → {}", path.display()),
             Err(e) => format!("snap failed: {e}"),
@@ -653,7 +616,9 @@ fn load_pack(asset_dir: &Path) -> Result<HashMap<String, Animation>, Box<dyn std
     for state in STATES {
         let path = asset_dir.join(format!("{state}.jsonl"));
         match Animation::load(&path) {
-            Ok(a) => { pack.insert((*state).to_string(), a); }
+            Ok(a) => {
+                pack.insert((*state).to_string(), a);
+            }
             Err(AnimationError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {
                 eprintln!("note: missing {} (skipped)", path.display());
             }
@@ -685,20 +650,27 @@ fn main_loop<B: ratatui::backend::Backend>(
                     _ => unreachable!(),
                 };
                 let success = runner.state.success.unwrap_or(false);
-                let duration = runner.state.started_at.map(|t| t.elapsed()).unwrap_or_default();
+                let duration = runner
+                    .state
+                    .started_at
+                    .map(|t| t.elapsed())
+                    .unwrap_or_default();
 
                 // If success and we have an output, fall back to the
                 // canonical output path heuristic when the engine
                 // didn't emit an explicit `output` field.
                 let mut outputs = runner.state.output_files.clone();
                 if outputs.is_empty() && success {
-                    if let Some(canonical) = canonical_output_path(&runner.input_path, &runner.config) {
+                    if let Some(canonical) =
+                        canonical_output_path(&runner.input_path, &runner.config)
+                    {
                         if canonical.is_file() {
                             outputs.push(canonical);
                         }
                     }
                 }
-                let srt_preview = outputs.first()
+                let srt_preview = outputs
+                    .first()
                     .map(|p| read_srt_preview(p, 12))
                     .unwrap_or_default();
 
@@ -725,14 +697,29 @@ fn main_loop<B: ratatui::backend::Backend>(
         if matches!(app.screen, Screen::Running(_)) {
             app.refresh_cue_preview();
             app.maybe_refresh_voice_priors();
+            let emerge_perm = if app.viz.mode == crate::runner_viz::VizMode::Emerge {
+                match &app.screen {
+                    Screen::Running(rs) => {
+                        let frame = &app.current_anim().frames[app.frame_idx];
+                        Some((
+                            rs.runner.input_path.to_string_lossy().into_owned(),
+                            crate::runner_viz::frame_cell_count(frame),
+                        ))
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some((key, cell_count)) = emerge_perm {
+                app.viz.ensure_emerge_perm(&key, cell_count);
+            }
             // Step the Running-screen visualizer. We don't have the
             // exact panel rect here, so we pass an over-approximation
             // (55% of terminal width × full height) — the viz adapts
             // its canvas to whatever it actually gets at render time.
             let (cw, ct) = match &app.screen {
-                Screen::Running(rs) => {
-                    (rs.runner.state.chunk_current, rs.runner.state.chunk_total)
-                }
+                Screen::Running(rs) => (rs.runner.state.chunk_current, rs.runner.state.chunk_total),
                 _ => (0, 0),
             };
             let term = terminal.size()?;
@@ -744,7 +731,18 @@ fn main_loop<B: ratatui::backend::Backend>(
         terminal.draw(|f| render(f, app))?;
         app.advance_frame_if_due();
 
-        if event::poll(Duration::from_millis(50))? {
+        // Idle redraw throttle. The default is the 50 ms (~20 Hz) cadence
+        // animations need to look smooth. When the user opted into
+        // reduced motion, the animation pins to its final frame, so we
+        // can slow the loop to 250 ms — still responsive on keypress,
+        // but a quarter the wakeups per second and a quarter the
+        // battery cost on a laptop sitting at the splash screen.
+        let poll_ms = if crate::accessibility::Accessibility::from_env().reduced_motion {
+            250
+        } else {
+            50
+        };
+        if event::poll(Duration::from_millis(poll_ms))? {
             if let Event::Key(k) = event::read()? {
                 if k.kind != KeyEventKind::Press {
                     continue;
@@ -777,18 +775,14 @@ fn main_loop<B: ratatui::backend::Backend>(
                 // Suppressed on Picker so they don't collide with text entry.
                 let on_text_input = matches!(&app.screen, Screen::Picker(_));
                 if !on_text_input {
-                    if matches!(k.code, KeyCode::Char('P'))
-                        && app.easter.panel.is_some()
-                    {
+                    if matches!(k.code, KeyCode::Char('P')) && app.easter.panel.is_some() {
                         app.easter.panel_open = !app.easter.panel_open;
                         if app.easter.panel_open {
                             app.panel_opened_at = Some(Instant::now());
                         }
                         continue;
                     }
-                    if matches!(k.code, KeyCode::Char('B'))
-                        && app.easter.panel.is_some()
-                    {
+                    if matches!(k.code, KeyCode::Char('B')) && app.easter.panel.is_some() {
                         app.easter.toggle_boss();
                         continue;
                     }
@@ -797,15 +791,15 @@ fn main_loop<B: ratatui::backend::Backend>(
                 // it's open. Open it on `:` from any screen except
                 // while the user is typing into a text field
                 // (Picker / Configure have their own char handlers).
-                if handle_exline_key(app, k) {
+                if input::handle_exline_key(app, k) {
                     continue;
                 }
                 // Panel hotkeys when it's visible — themes, boss key,
                 // close — only apply when the panel is open.
-                if app.easter.panel_open && handle_panel_key(app, k) {
+                if app.easter.panel_open && input::handle_panel_key(app, k) {
                     continue;
                 }
-                let next = handle_key(app, k);
+                let next = input::handle_key(app, k);
                 if let Some(rc) = next {
                     return rc;
                 }
@@ -813,436 +807,6 @@ fn main_loop<B: ratatui::backend::Backend>(
         }
     }
 }
-
-/// Vim-style ex-line input handler.
-///
-/// Returns `true` when the keystroke was consumed by the ex-line and
-/// must not be dispatched to the rest of the app.
-fn handle_exline_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
-    // Open the ex-line on `:` when:
-    // - it's not already open,
-    // - we're not in a screen that owns the keyboard for text input.
-    if app.exline.is_none() {
-        let on_text_input = matches!(&app.screen, Screen::Picker(_));
-        if !on_text_input && matches!(k.code, KeyCode::Char(':')) {
-            app.exline = Some(String::new());
-            return true;
-        }
-        return false;
-    }
-    // Ex-line is open. Consume the keystroke.
-    let buf = app.exline.as_mut().expect("ex-line open");
-    match k.code {
-        KeyCode::Esc => {
-            app.exline = None;
-        }
-        KeyCode::Backspace => {
-            buf.pop();
-        }
-        KeyCode::Enter => {
-            let phrase = std::mem::take(buf);
-            app.exline = None;
-            let msg = app.try_unlock_phrase(&phrase);
-            // Flash the message back through the ex-line buffer so
-            // the renderer can show it for one frame; clear on next
-            // open. We stash it inside Some(...) so render() sees it.
-            app.exline = Some(format!("\x00{msg}"));
-        }
-        KeyCode::Char(c) => {
-            // Clear any flash-message on first real input.
-            if buf.starts_with('\x00') {
-                buf.clear();
-            }
-            if buf.len() < 64 {
-                buf.push(c);
-            }
-        }
-        _ => {}
-    }
-    true
-}
-
-/// Hidden panel hotkey handler. Only invoked while `easter.panel_open`.
-/// Returns true when the keystroke was consumed.
-fn handle_panel_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
-    match k.code {
-        KeyCode::Char('t') => {
-            app.easter.cycle_theme();
-            app.theme_changed_at = Some(Instant::now());
-            app.prefs.theme = app.easter.theme.ident().to_string();
-            let _ = app.prefs.save();
-            true
-        }
-        KeyCode::Char('b') => {
-            app.easter.toggle_boss();
-            true
-        }
-        KeyCode::Char('p') | KeyCode::Esc => {
-            // Close panel; `p` is "panel" mnemonic.
-            app.easter.panel_open = false;
-            true
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if let Some(panel) = app.easter.panel.as_ref() {
-                let n = panel.manifest.items.len();
-                if n > 0 {
-                    app.easter.panel_cursor = (app.easter.panel_cursor + 1) % n;
-                }
-            }
-            true
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if let Some(panel) = app.easter.panel.as_ref() {
-                let n = panel.manifest.items.len();
-                if n > 0 {
-                    app.easter.panel_cursor =
-                        (app.easter.panel_cursor + n - 1) % n;
-                }
-            }
-            true
-        }
-        KeyCode::Enter => {
-            // Play the highlighted panel item by switching to its
-            // injected pack key.
-            if app.easter.panel.is_some() {
-                let cursor = app.easter.panel_cursor;
-                let name = app
-                    .pack
-                    .keys()
-                    .filter(|k| k.starts_with("secret_a_"))
-                    .nth(cursor)
-                    .cloned();
-                if let Some(name) = name {
-                    app.force_anim(&name);
-                    app.easter.panel_open = false;
-                }
-            }
-            true
-        }
-        _ => false,
-    }
-}
-
-/// Returns Some(result) when the loop should exit; otherwise None.
-fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> Option<Result<(), Box<dyn std::error::Error>>> {
-    match &mut app.screen {
-        Screen::Greeting => match k.code {
-            // Esc on Greeting first tries to release the anim
-            // override (so engine state can drive again); a second
-            // Esc with override already off exits the program.
-            KeyCode::Esc if app.anim_override => {
-                app.release_anim_override();
-                return None;
-            }
-            KeyCode::Char('q') | KeyCode::Esc => return Some(Ok(())),
-            KeyCode::Enter => {
-                app.screen = Screen::Picker(PickerState {
-                    input: String::new(),
-                    error: None,
-                    selected_recent: None,
-                });
-            }
-            KeyCode::Tab => app.cycle_anim(1),
-            KeyCode::BackTab => app.cycle_anim(-1),
-            KeyCode::Char(c) if ('1'..='7').contains(&c) => {
-                let idx = (c as u8 - b'1') as usize;
-                if let Some(name) = STATES.get(idx) {
-                    let n = (*name).to_string();
-                    app.force_anim(&n);
-                }
-            }
-            // Audio controls — only meaningful when the active
-            // animation has a sound track. Keys are ignored otherwise.
-            KeyCode::Char('m') if app.current_anim_has_audio() => {
-                if let Some(a) = app.audio.as_mut() { a.toggle_mute(); }
-            }
-            KeyCode::Char('+') | KeyCode::Char('=')
-                if app.current_anim_has_audio() =>
-            {
-                if let Some(a) = app.audio.as_mut() { a.nudge_volume(0.05); }
-            }
-            KeyCode::Char('-') | KeyCode::Char('_')
-                if app.current_anim_has_audio() =>
-            {
-                if let Some(a) = app.audio.as_mut() { a.nudge_volume(-0.05); }
-            }
-            // `p` cycles the quality profile that the next spawned
-            // engine will use. We flash the new profile through the
-            // ex-line so the user gets visual confirmation without a
-            // dedicated status widget.
-            KeyCode::Char('p') => {
-                let next = cycle_profile(&app.last_config.profile);
-                app.last_config.profile = next.to_string();
-                app.exline = Some(format!("\x00profile → {next}"));
-            }
-            // `r` jumps straight to Configure for the most-recent
-            // input — skips the Picker entirely. Best UX for the
-            // "run the same file again with a tweak" pattern.
-            KeyCode::Char('r') => {
-                if let Some(entry) = app.recents.entries.last().cloned() {
-                    if entry.path.is_file() {
-                        app.screen = Screen::Configure(ConfigureState {
-                            input_path: entry.path,
-                            config: app.last_config.clone(),
-                            cursor: ConfigField::Profile,
-                        });
-                    } else {
-                        app.exline = Some(format!(
-                            "\x00recent missing: {}",
-                            entry.path.display()
-                        ));
-                    }
-                } else {
-                    app.exline = Some("\x00no recent input".to_string());
-                }
-            }
-            _ => {}
-        },
-        Screen::Picker(ps) => match k.code {
-            KeyCode::Esc => {
-                app.screen = Screen::Greeting;
-                app.switch_anim(GREETING_DEFAULT_STATE);
-            }
-            KeyCode::Char('q') if ps.input.is_empty() && ps.selected_recent.is_none() => {
-                return Some(Ok(()));
-            }
-            KeyCode::Up => {
-                let n = app.recents.entries.len();
-                if n > 0 {
-                    ps.selected_recent = Some(match ps.selected_recent {
-                        None => n - 1,
-                        Some(0) => 0,
-                        Some(i) => i - 1,
-                    });
-                }
-            }
-            KeyCode::Down => {
-                let n = app.recents.entries.len();
-                if n > 0 {
-                    ps.selected_recent = Some(match ps.selected_recent {
-                        None => 0,
-                        Some(i) if i + 1 < n => i + 1,
-                        Some(_) => {
-                            return None;
-                        }
-                    });
-                }
-            }
-            KeyCode::Tab => {
-                ps.input = sanitize_path_input(&ps.input);
-                if let Some(completed) = complete_path(&ps.input) {
-                    ps.input = completed;
-                }
-                ps.error = None;
-            }
-            KeyCode::Enter => {
-                let raw = sanitize_path_input(&ps.input);
-                let path = if let Some(idx) = ps.selected_recent {
-                    app.recents.entries.get(idx).map(|r| r.path.clone())
-                        .unwrap_or_else(|| PathBuf::from(&raw))
-                } else {
-                    PathBuf::from(&raw)
-                };
-                if !path.is_file() {
-                    ps.error = Some(format!("not a file: {}", path.display()));
-                } else {
-                    app.recents.record(&path);
-                    app.screen = Screen::Configure(ConfigureState {
-                        input_path: path,
-                        config: app.last_config.clone(),
-                        cursor: ConfigField::Profile,
-                    });
-                }
-            }
-            KeyCode::Backspace => {
-                if ps.selected_recent.is_some() {
-                    ps.selected_recent = None;
-                } else {
-                    ps.input.pop();
-                }
-                ps.error = None;
-            }
-            KeyCode::Char(c) => {
-                ps.selected_recent = None;
-                ps.input.push(c);
-                ps.error = None;
-            }
-            _ => {}
-        },
-        Screen::Configure(cs) => match k.code {
-            KeyCode::Esc => {
-                app.screen = Screen::Picker(PickerState {
-                    input: cs.input_path.to_string_lossy().to_string(),
-                    error: None,
-                    selected_recent: None,
-                });
-            }
-            KeyCode::Char('q') => return Some(Ok(())),
-            KeyCode::Tab | KeyCode::Down => cs.cursor = cs.cursor.next(),
-            KeyCode::BackTab | KeyCode::Up => cs.cursor = cs.cursor.prev(),
-            KeyCode::Left => adjust_config(cs, -1),
-            KeyCode::Right => adjust_config(cs, 1),
-            KeyCode::Enter => match cs.cursor {
-                ConfigField::Start => {
-                    let engine = match locate_engine_binary() {
-                        Some(p) => p,
-                        None => {
-                            // Bounce back to picker with an error.
-                            app.screen = Screen::Picker(PickerState {
-                                input: cs.input_path.to_string_lossy().into(),
-                                error: Some("sub-zero engine binary not found (build with `cargo build --release`)".into()),
-                                selected_recent: None,
-                            });
-                            return None;
-                        }
-                    };
-                    let cfg = cs.config.clone();
-                    let path = cs.input_path.clone();
-                    match EngineRunner::spawn(&engine, &path, &cfg) {
-                        Ok(runner) => {
-                            app.last_config = cfg.clone();
-                            app.viz.reset_for_run();
-                            app.screen = Screen::Running(RunningState { runner, config: cfg });
-                            app.switch_anim("running");
-                        }
-                        Err(e) => {
-                            app.screen = Screen::Picker(PickerState {
-                                input: path.to_string_lossy().into(),
-                                error: Some(format!("failed to spawn engine: {e}")),
-                                selected_recent: None,
-                            });
-                        }
-                    }
-                }
-                _ => cs.cursor = cs.cursor.next(),
-            },
-            _ => {}
-        },
-        Screen::Running(rs) => match k.code {
-            // `c` for cancel — explicit mnemonic alongside the
-            // q/Esc aliases. Cleanly aborts the engine subprocess
-            // (which flushes any checkpoint state via its own
-            // signal handler) and flips the animation to warning.
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('c') => rs.runner.abort(),
-            // `g` cycles the three Running-screen visual modes:
-            // original braille playback → emerge reveal → generative
-            // flow-field → back to original. Flashes the new mode
-            // name through the ex-line so the user sees the swap.
-            KeyCode::Char('g') => {
-                app.viz.cycle_mode();
-                app.exline = Some(format!("\x00viz → {}", app.viz.mode.label()));
-            }
-            _ => {}
-        },
-        Screen::Result(rs) => match k.code {
-            KeyCode::Char('q') | KeyCode::Esc => return Some(Ok(())),
-            KeyCode::Enter => {
-                app.screen = Screen::Greeting;
-                app.switch_anim(GREETING_DEFAULT_STATE);
-            }
-            KeyCode::Char('r') => {
-                // Retry: re-spawn the engine with the same input + config.
-                let engine = match locate_engine_binary() {
-                    Some(p) => p,
-                    None => return None,
-                };
-                let cfg = rs.config.clone();
-                let path = rs.input.clone();
-                if let Ok(runner) = EngineRunner::spawn(&engine, &path, &cfg) {
-                    app.viz.reset_for_run();
-                    app.screen = Screen::Running(RunningState { runner, config: cfg });
-                    app.switch_anim("running");
-                }
-            }
-            KeyCode::Char('o') => {
-                let target = rs.output_files.first()
-                    .and_then(|p| p.parent())
-                    .or_else(|| rs.input.parent())
-                    .map(|p| p.to_path_buf());
-                if let Some(dir) = target {
-                    open_directory(&dir);
-                }
-            }
-            KeyCode::Char('s') => {
-                // Open the ex-line in "save-as" mode. User types target
-                // path, presses Enter; the handler copies the first
-                // output file there. Recognised by the same try_unlock
-                // dispatcher.
-                if let Some(out) = rs.output_files.first() {
-                    let default = out
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "output.srt".to_string());
-                    app.exline = Some(format!("save {default}"));
-                }
-            }
-            _ => {}
-        },
-    }
-    None
-}
-
-/// Step a config value left/right by `delta`. Each field has its own
-/// list of valid options or a wraparound integer range.
-fn adjust_config(cs: &mut ConfigureState, delta: i32) {
-    match cs.cursor {
-        ConfigField::SourceLang => cycle_in(LANGS, &mut cs.config.source_lang, delta),
-        ConfigField::TargetLang => cycle_in(LANGS, &mut cs.config.target_lang, delta),
-        ConfigField::Profile    => cycle_in(PROFILES, &mut cs.config.profile, delta),
-        ConfigField::Gpu => {
-            cs.config.gpu = !cs.config.gpu;
-        }
-        ConfigField::Workers => {
-            let new = (cs.config.workers as i32 + delta).max(1).min(8);
-            cs.config.workers = new as u32;
-        }
-        ConfigField::Start => {}
-    }
-}
-
-fn cycle_in(options: &[&str], current: &mut String, delta: i32) {
-    let idx = options.iter().position(|s| *s == current.as_str()).unwrap_or(0) as i32;
-    let n = options.len() as i32;
-    let next = ((idx + delta).rem_euclid(n)) as usize;
-    *current = options[next].to_string();
-}
-
-fn canonical_output_path(input: &Path, config: &EngineConfig) -> Option<PathBuf> {
-    // Sub-Zero canonical output naming: <stem>.<target>.srt next to input.
-    let parent = input.parent()?;
-    let stem = input.file_stem()?.to_str()?;
-    let lang = if config.target_lang.is_empty() { "en" } else { &config.target_lang };
-    Some(parent.join(format!("{stem}.{lang}.srt")))
-}
-
-fn read_srt_preview(path: &Path, max_lines: usize) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    text.lines()
-        .take(max_lines)
-        .map(|s| s.to_string())
-        .collect()
-}
-
-fn open_directory(dir: &Path) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("explorer").arg(dir).spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(dir).spawn();
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Rendering
-// ─────────────────────────────────────────────────────────────────────
 
 fn render(f: &mut ratatui::Frame, app: &App) {
     let area = f.area();
@@ -1313,31 +877,38 @@ fn render_help_overlay(f: &mut ratatui::Frame, body: Rect) {
             " ── visible ──────────────────────────────",
             Style::default().fg(palette::MUTED),
         )),
-        help_row("Enter",    "start / proceed"),
-        help_row("Tab / ⇧Tab","cycle animation"),
-        help_row("1-7",      "preview animation slot"),
-        help_row("m / +/-",  "audio mute / volume"),
-        help_row("p",        "cycle quality profile (Greeting)"),
-        help_row("c",        "cancel running translation"),
-        help_row("Esc",      "back"),
-        help_row("q",        "quit"),
+        help_row("Enter", "start / proceed"),
+        help_row("Tab / ⇧Tab", "cycle animation"),
+        help_row("1-7", "preview animation slot"),
+        help_row("m / +/-", "audio mute / volume"),
+        help_row("p", "cycle quality profile (Greeting)"),
+        help_row("c", "cancel running translation"),
+        help_row("Esc", "back"),
+        help_row("q", "quit"),
         Line::raw(""),
         Line::from(Span::styled(
             " ── ex-line (after `:`) ──────────────────",
             Style::default().fg(palette::MUTED),
         )),
-        help_row(":help",    "this screen"),
-        help_row(":snap NAME","save current frame to NAME"),
-        help_row(":save PATH","save the last output srt to PATH"),
+        help_row(":help", "this screen"),
+        help_row(":snap NAME", "save current frame to NAME"),
+        help_row(":save PATH", "save the last output srt to PATH"),
         Line::raw(""),
         Line::from(Span::styled(
             " any key to dismiss ",
-            Style::default().fg(palette::FAINT).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(palette::FAINT)
+                .add_modifier(Modifier::ITALIC),
         )),
     ];
     let widest = lines
         .iter()
-        .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>())
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum::<usize>()
+        })
         .max()
         .unwrap_or(48);
     let want_w = (widest as u16 + 4).min(body.width);
@@ -1359,10 +930,7 @@ fn render_help_overlay(f: &mut ratatui::Frame, body: Rect) {
 
 fn help_row(key: &'static str, label: &'static str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            format!("  {key:<10}"),
-            Style::default().fg(palette::PINK),
-        ),
+        Span::styled(format!("  {key:<10}"), Style::default().fg(palette::PINK)),
         Span::styled(label, Style::default().fg(palette::TEXT)),
     ])
 }
@@ -1396,7 +964,9 @@ fn render_exline(f: &mut ratatui::Frame, area: Rect, app: &App) {
 /// active theme, and the hotkey hints (t = theme, b = boss, p = close,
 /// Enter = play, j/k = navigate).
 fn render_panel_overlay(f: &mut ratatui::Frame, body_area: Rect, app: &App) {
-    let Some(panel) = app.easter.panel.as_ref() else { return };
+    let Some(panel) = app.easter.panel.as_ref() else {
+        return;
+    };
     let item_count = panel.manifest.items.len();
     let mut lines: Vec<Line> = Vec::with_capacity(item_count + 4);
     lines.push(Line::from(Span::styled(
@@ -1407,15 +977,24 @@ fn render_panel_overlay(f: &mut ratatui::Frame, body_area: Rect, app: &App) {
     )));
     lines.push(Line::raw(""));
     for (i, item) in panel.manifest.items.iter().enumerate() {
-        let marker = if i == app.easter.panel_cursor { "▸ " } else { "  " };
+        let marker = if i == app.easter.panel_cursor {
+            "▸ "
+        } else {
+            "  "
+        };
         let label_style = if i == app.easter.panel_cursor {
-            Style::default().fg(palette::ACCENT_2).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(palette::ACCENT_2)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(palette::TEXT)
         };
         lines.push(Line::from(vec![
             Span::styled(marker, Style::default().fg(palette::ACCENT)),
-            Span::styled(format!("[{}] ", item.kind), Style::default().fg(palette::MUTED)),
+            Span::styled(
+                format!("[{}] ", item.kind),
+                Style::default().fg(palette::MUTED),
+            ),
             Span::styled(item.label.clone(), label_style),
         ]));
     }
@@ -1432,7 +1011,12 @@ fn render_panel_overlay(f: &mut ratatui::Frame, body_area: Rect, app: &App) {
 
     let widest = lines
         .iter()
-        .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>())
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum::<usize>()
+        })
         .max()
         .unwrap_or(40);
     let full_w = (widest as u16 + 4).min(body_area.width.saturating_sub(2));
@@ -1505,7 +1089,10 @@ fn render_waveform_strip(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Some(env) => env.window(cursor_ms, 1_500, bars),
         None => crate::waveform::fallback_bars(bars, app.loop_started.elapsed().as_secs_f64()),
     };
-    let line: String = values.iter().map(|v| crate::waveform::block_for(*v)).collect();
+    let line: String = values
+        .iter()
+        .map(|v| crate::waveform::block_for(*v))
+        .collect();
     let body = Paragraph::new(Line::from(Span::styled(
         line,
         Style::default().fg(theme_accent(app.easter.theme)),
@@ -1531,7 +1118,10 @@ fn render_boss_screen(f: &mut ratatui::Frame, area: Rect) {
             Style::default().fg(palette::MUTED),
         )),
         Line::from(Span::styled(
-            format!("     Building [============>      ] {} / 218", (now % 200) + 18),
+            format!(
+                "     Building [============>      ] {} / 218",
+                (now % 200) + 18
+            ),
             Style::default().fg(palette::ACCENT_2),
         )),
         Line::from(Span::styled(
@@ -1562,21 +1152,29 @@ fn render_titlebar(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .constraints([
             Constraint::Length(2),
             Constraint::Min(0),
-            Constraint::Length(22),  // volume widget
-            Constraint::Length(20),  // status
+            Constraint::Length(22), // volume widget
+            Constraint::Length(20), // status
             Constraint::Length(2),
         ])
         .split(area);
     let (status_label, status_color) = status_for_screen(&app.screen);
     let title = Paragraph::new(Line::from(vec![
-        Span::styled("Sub-Zero", Style::default().fg(palette::ACCENT_2).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Sub-Zero",
+            Style::default()
+                .fg(palette::ACCENT_2)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("  ·  brigade", Style::default().fg(palette::MUTED)),
     ]));
     f.render_widget(title, cols[1]);
     render_volume_widget(f, cols[2], app);
     let online = Paragraph::new(Line::from(vec![
         Span::styled("●", Style::default().fg(status_color)),
-        Span::styled(format!(" {}", status_label), Style::default().fg(palette::MUTED)),
+        Span::styled(
+            format!(" {}", status_label),
+            Style::default().fg(palette::MUTED),
+        ),
     ]))
     .alignment(Alignment::Right);
     f.render_widget(online, cols[3]);
@@ -1586,7 +1184,9 @@ fn render_titlebar(f: &mut ratatui::Frame, area: Rect, app: &App) {
 /// carries audio. Muted state shows `🔇` (rendered as `M` in
 /// ASCII-only terminals) plus the dim bar.
 fn render_volume_widget(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let Some(audio) = app.audio.as_ref() else { return; };
+    let Some(audio) = app.audio.as_ref() else {
+        return;
+    };
     if !app.current_anim_has_audio() {
         return;
     }
@@ -1625,7 +1225,13 @@ fn status_for_screen(s: &Screen) -> (&'static str, Color) {
             "warning" => ("warn", palette::ACCENT_2),
             _ => ("running", palette::ACCENT),
         },
-        Screen::Result(rs) => if rs.success { ("complete", palette::GREEN) } else { ("error", palette::RED) },
+        Screen::Result(rs) => {
+            if rs.success {
+                ("complete", palette::GREEN)
+            } else {
+                ("error", palette::RED)
+            }
+        }
     }
 }
 
@@ -1667,9 +1273,17 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &App, ps: &PickerState
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if input_active { palette::ACCENT } else { palette::FAINT }))
-        .title(Span::styled(" choose a file ",
-            Style::default().fg(palette::ACCENT_2).add_modifier(Modifier::BOLD)));
+        .border_style(Style::default().fg(if input_active {
+            palette::ACCENT
+        } else {
+            palette::FAINT
+        }))
+        .title(Span::styled(
+            " choose a file ",
+            Style::default()
+                .fg(palette::ACCENT_2)
+                .add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(form_rect);
     f.render_widget(block, form_rect);
 
@@ -1681,12 +1295,19 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &App, ps: &PickerState
     ]);
     let mut content = vec![Line::raw(""), prompt, Line::raw("")];
     if let Some(err) = &ps.error {
-        content.push(Line::from(Span::styled(err.clone(),
-            Style::default().fg(palette::RED).add_modifier(Modifier::DIM))));
+        content.push(Line::from(Span::styled(
+            err.clone(),
+            Style::default()
+                .fg(palette::RED)
+                .add_modifier(Modifier::DIM),
+        )));
     } else {
         content.push(Line::from(Span::styled(
             "type or paste a video / audio path · ↓ select a recent file",
-            Style::default().fg(palette::MUTED).add_modifier(Modifier::DIM))));
+            Style::default()
+                .fg(palette::MUTED)
+                .add_modifier(Modifier::DIM),
+        )));
     }
     f.render_widget(Paragraph::new(content), inner);
 
@@ -1701,7 +1322,9 @@ fn render_recents(f: &mut ratatui::Frame, area: Rect, app: &App, ps: &PickerStat
     let mut lines = Vec::with_capacity(app.recents.entries.len() + 2);
     lines.push(Line::from(Span::styled(
         "  recents",
-        Style::default().fg(palette::MUTED).add_modifier(Modifier::DIM),
+        Style::default()
+            .fg(palette::MUTED)
+            .add_modifier(Modifier::DIM),
     )));
     for (i, entry) in app.recents.entries.iter().enumerate().take(8) {
         let active = ps.selected_recent == Some(i);
@@ -1712,11 +1335,15 @@ fn render_recents(f: &mut ratatui::Frame, area: Rect, app: &App, ps: &PickerStat
             Style::default().fg(palette::FAINT)
         };
         let path_style = if active {
-            Style::default().fg(palette::ACCENT_2).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(palette::ACCENT_2)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(palette::TEXT)
         };
-        let display = entry.path.file_name()
+        let display = entry
+            .path
+            .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or_else(|| entry.path.to_str().unwrap_or(""))
             .to_string();
@@ -1747,8 +1374,12 @@ fn render_configure(f: &mut ratatui::Frame, area: Rect, app: &App, cs: &Configur
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(palette::ACCENT))
-        .title(Span::styled(" configure ",
-            Style::default().fg(palette::ACCENT_2).add_modifier(Modifier::BOLD)));
+        .title(Span::styled(
+            " configure ",
+            Style::default()
+                .fg(palette::ACCENT_2)
+                .add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(form_rect);
     f.render_widget(block, form_rect);
 
@@ -1759,18 +1390,42 @@ fn render_configure(f: &mut ratatui::Frame, area: Rect, app: &App, cs: &Configur
             Span::styled(path_disp, Style::default().fg(palette::TEXT)),
         ]),
         Line::raw(""),
-        config_row("source",  &cs.config.source_lang, cs.cursor == ConfigField::SourceLang),
-        config_row("target",  &cs.config.target_lang, cs.cursor == ConfigField::TargetLang),
-        config_row("profile", &cs.config.profile,     cs.cursor == ConfigField::Profile),
-        config_row("gpu",     if cs.config.gpu { "on" } else { "off" }, cs.cursor == ConfigField::Gpu),
-        config_row("workers", &cs.config.workers.to_string(), cs.cursor == ConfigField::Workers),
+        config_row(
+            "source",
+            &cs.config.source_lang,
+            cs.cursor == ConfigField::SourceLang,
+        ),
+        config_row(
+            "target",
+            &cs.config.target_lang,
+            cs.cursor == ConfigField::TargetLang,
+        ),
+        config_row(
+            "profile",
+            &cs.config.profile,
+            cs.cursor == ConfigField::Profile,
+        ),
+        config_row(
+            "gpu",
+            if cs.config.gpu { "on" } else { "off" },
+            cs.cursor == ConfigField::Gpu,
+        ),
+        config_row(
+            "workers",
+            &cs.config.workers.to_string(),
+            cs.cursor == ConfigField::Workers,
+        ),
         Line::raw(""),
         Line::from({
             let active = cs.cursor == ConfigField::Start;
             let style = if active {
-                Style::default().fg(palette::ACCENT_2).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(palette::ACCENT_2)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(palette::ACCENT).add_modifier(Modifier::DIM)
+                Style::default()
+                    .fg(palette::ACCENT)
+                    .add_modifier(Modifier::DIM)
             };
             vec![Span::raw("  "), Span::styled("▶  start engine", style)]
         }),
@@ -1781,12 +1436,16 @@ fn render_configure(f: &mut ratatui::Frame, area: Rect, app: &App, cs: &Configur
 
 fn config_row(label: &str, value: &str, active: bool) -> Line<'static> {
     let label_style = if active {
-        Style::default().fg(palette::ACCENT_2).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(palette::ACCENT_2)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(palette::MUTED)
     };
     let value_style = if active {
-        Style::default().fg(palette::ACCENT_2).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(palette::ACCENT_2)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(palette::TEXT)
     };
@@ -1813,10 +1472,7 @@ fn config_row(label: &str, value: &str, active: bool) -> Line<'static> {
 fn render_running(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &RunningState) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(55),
-            Constraint::Percentage(45),
-        ])
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
 
     render_running_animation(f, cols[0], app, rs);
@@ -1856,7 +1512,10 @@ fn render_cue_preview(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(palette::FAINT))
-        .title(Span::styled(" live cues ", Style::default().fg(palette::ACCENT)));
+        .title(Span::styled(
+            " live cues ",
+            Style::default().fg(palette::ACCENT),
+        ));
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width < 16 || inner.height < 2 {
@@ -1866,7 +1525,9 @@ fn render_cue_preview(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if app.cue_preview_cache.is_empty() {
         let placeholder = Paragraph::new(Line::from(Span::styled(
             "  waiting for first cue …",
-            Style::default().fg(palette::FAINT).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(palette::FAINT)
+                .add_modifier(Modifier::ITALIC),
         )));
         f.render_widget(placeholder, inner);
         return;
@@ -1874,8 +1535,11 @@ fn render_cue_preview(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let now = Instant::now();
     const SWOOSH_MS: u128 = 700;
-    const HOLD_MS:   u128 = 700;
-    let visible = app.cue_preview_cache.len().saturating_sub(inner.height as usize);
+    const HOLD_MS: u128 = 700;
+    let visible = app
+        .cue_preview_cache
+        .len()
+        .saturating_sub(inner.height as usize);
     let line_width = inner.width as usize;
     let lines: Vec<Line> = app.cue_preview_cache[visible..]
         .iter()
@@ -1917,10 +1581,7 @@ fn render_cue_preview(f: &mut ratatui::Frame, area: Rect, app: &App) {
                                 .fg(palette::PINK)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(
-                            tail,
-                            Style::default().fg(palette::MUTED),
-                        ),
+                        Span::styled(tail, Style::default().fg(palette::MUTED)),
                     ])
                 }
                 Some(age) if age < SWOOSH_MS + HOLD_MS => {
@@ -1946,57 +1607,6 @@ fn render_cue_preview(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
-/// Pull the last `max_cues` cues from an SRT file by parsing only the
-/// tail of the file. Cheap to call on every redraw because we cap
-/// the read at the last ~32 KB — enough for ~50 cues at typical sizes.
-fn tail_srt_cues(path: &Path, max_cues: usize) -> Vec<(u32, String)> {
-    let Ok(mut file) = std::fs::File::open(path) else { return Vec::new() };
-    use std::io::{Read, Seek, SeekFrom};
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let tail_window: u64 = 32 * 1024;
-    let start = len.saturating_sub(tail_window);
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return Vec::new();
-    }
-    let mut buf = String::new();
-    if file.read_to_string(&mut buf).is_err() {
-        // SRT files can occasionally contain non-UTF-8 bytes during
-        // mid-write; fall back to lossy decode.
-        let mut bytes = Vec::new();
-        if std::fs::File::open(path)
-            .and_then(|mut f| f.read_to_end(&mut bytes))
-            .is_err()
-        {
-            return Vec::new();
-        }
-        buf = String::from_utf8_lossy(&bytes).into_owned();
-    }
-    // Drop the first (possibly partial) block when we entered mid-file.
-    let blocks = buf.split("\n\n");
-    let mut cues: Vec<(u32, String)> = Vec::new();
-    for block in blocks {
-        let lines: Vec<&str> = block.lines().collect();
-        if lines.len() < 3 {
-            continue;
-        }
-        let idx: u32 = match lines[0].trim().parse() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        // lines[1] is the timing line; the rest is text.
-        let text = lines[2..].join(" ").trim().to_string();
-        if text.is_empty() {
-            continue;
-        }
-        cues.push((idx, text));
-    }
-    if cues.len() > max_cues {
-        let cut = cues.len() - max_cues;
-        cues = cues.split_off(cut);
-    }
-    cues
-}
-
 /// Compact telemetry panel: throughput sparkline of recent chunk
 /// completions, voice-consistency aggregate from the F.2 voice
 /// prior stage, and (when the engine has produced voice priors) one
@@ -2008,7 +1618,10 @@ fn render_telemetry(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &RunningS
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(palette::FAINT))
-        .title(Span::styled(" telemetry ", Style::default().fg(palette::MUTED)));
+        .title(Span::styled(
+            " telemetry ",
+            Style::default().fg(palette::MUTED),
+        ));
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width < 16 || inner.height < 3 {
@@ -2023,14 +1636,18 @@ fn render_telemetry(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &RunningS
     let mut buckets = vec![0u32; bar_width.max(1)];
     for t in s.chunk_completions.iter() {
         let secs_ago = now.duration_since(*t).as_secs_f64();
-        let bucket = bar_width.saturating_sub(1).saturating_sub(secs_ago as usize);
+        let bucket = bar_width
+            .saturating_sub(1)
+            .saturating_sub(secs_ago as usize);
         if bucket < buckets.len() {
             buckets[bucket] = buckets[bucket].saturating_add(1);
         }
     }
     let max_bucket = buckets.iter().copied().max().unwrap_or(0).max(1);
-    let glyphs = [' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}',
-                  '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+    let glyphs = [
+        ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
+    ];
     let spark: String = buckets
         .iter()
         .map(|&c| {
@@ -2042,7 +1659,10 @@ fn render_telemetry(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &RunningS
     let throughput_line = Line::from(vec![
         Span::styled("  chunks/s  ", Style::default().fg(palette::MUTED)),
         Span::styled(spark, Style::default().fg(palette::ACCENT_2)),
-        Span::styled(format!(" {total_done:>3}"), Style::default().fg(palette::TEXT)),
+        Span::styled(
+            format!(" {total_done:>3}"),
+            Style::default().fg(palette::TEXT),
+        ),
     ]);
 
     // Voice-consistency block. Only populated once the engine has run
@@ -2096,10 +1716,7 @@ fn render_telemetry(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &RunningS
     let mut lines = vec![throughput_line, voice_line, q_line];
     if !app.voice_priors_cache.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(
-                "  voices    ",
-                Style::default().fg(palette::MUTED),
-            ),
+            Span::styled("  voices    ", Style::default().fg(palette::MUTED)),
             Span::styled(
                 crate::voice_view::FEATURE_HEADER,
                 Style::default().fg(palette::FAINT),
@@ -2107,7 +1724,9 @@ fn render_telemetry(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &RunningS
         ]));
         let limit = (inner.height as usize).saturating_sub(4).max(0);
         for sig in app.voice_priors_cache.iter().take(limit) {
-            let bars: String = sig.bars.iter()
+            let bars: String = sig
+                .bars
+                .iter()
                 .map(|v| {
                     let g = crate::voice_view::bar_glyph(*v);
                     format!("{g}{g}{g} ")
@@ -2138,30 +1757,48 @@ fn render_telemetry(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &RunningS
 fn render_engine_info(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &RunningState) {
     let s = &rs.runner.state;
     let stage = s.current_stage.as_deref().unwrap_or("init");
-    let elapsed = s.started_at.map(|t| format_duration(t.elapsed())).unwrap_or_default();
-    let eta = s.eta_secs.map(|e| format_duration(Duration::from_secs_f64(e.max(0.0)))).unwrap_or_else(|| "—".into());
+    let elapsed = s
+        .started_at
+        .map(|t| format_duration(t.elapsed()))
+        .unwrap_or_default();
+    let eta = s
+        .eta_secs
+        .map(|e| format_duration(Duration::from_secs_f64(e.max(0.0))))
+        .unwrap_or_else(|| "—".into());
     let chunks = if s.chunk_total > 0 {
         format!("{} / {}", s.chunk_current, s.chunk_total)
     } else {
         "—".to_string()
     };
+    let cues = s
+        .cue_count
+        .map(|count| count.to_string())
+        .unwrap_or_else(|| "—".to_string());
     let tick = app.loop_started.elapsed().as_millis();
 
     let lines: Vec<Line> = vec![
-        kv("source",  &shorten(rs.runner.input_path.to_string_lossy().as_ref(), 36)),
+        kv(
+            "source",
+            &shorten(rs.runner.input_path.to_string_lossy().as_ref(), 36),
+        ),
         pipeline_flowchart_line(stage, &s.stages_complete, tick),
         chunk_timeline_line(s.chunk_current, s.chunk_total, area.width, tick),
-        kv("chunks",  &chunks),
+        kv("chunks", &chunks),
+        kv("cues", &cues),
         kv("elapsed", &elapsed),
-        kv("eta",     &eta),
+        kv("eta", &eta),
     ];
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(palette::FAINT))
-        .title(Span::styled(" engine ",
-            Style::default().fg(palette::ACCENT_2).add_modifier(Modifier::BOLD)));
+        .title(Span::styled(
+            " engine ",
+            Style::default()
+                .fg(palette::ACCENT_2)
+                .add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_widget(Paragraph::new(lines), inner);
@@ -2183,8 +1820,7 @@ fn chunk_timeline_line(current: u32, total: u32, panel_width: u16, tick: u128) -
     let max_cells = (panel_width.saturating_sub(12) as usize).max(8);
     let cells_to_draw = (total as usize).min(max_cells);
     let scale = total as f64 / cells_to_draw as f64;
-    let cur_cell = ((current as f64 - 0.5) / scale).clamp(0.0, cells_to_draw as f64 - 1.0)
-        as usize;
+    let cur_cell = ((current as f64 - 0.5) / scale).clamp(0.0, cells_to_draw as f64 - 1.0) as usize;
 
     let mut spans: Vec<Span> = vec![Span::styled(
         "  chunks ",
@@ -2192,7 +1828,7 @@ fn chunk_timeline_line(current: u32, total: u32, panel_width: u16, tick: u128) -
     )];
     // Shimmer: alternate between ▓ and █ every 200 ms for the active
     // cell so the eye picks it out without strobing.
-    let shimmer_on = (tick / 200) % 2 == 0;
+    let shimmer_on = (tick / 200).is_multiple_of(2);
     let active_glyph = if shimmer_on { '█' } else { '▓' };
 
     let mut chunk_str = String::with_capacity(cells_to_draw);
@@ -2203,7 +1839,9 @@ fn chunk_timeline_line(current: u32, total: u32, panel_width: u16, tick: u128) -
     let push_run = |styles: &mut Vec<(Style, usize)>, state: u8, n: usize| {
         let st = match state {
             0 => Style::default().fg(palette::GREEN),
-            1 => Style::default().fg(palette::ACCENT_2).add_modifier(Modifier::BOLD),
+            1 => Style::default()
+                .fg(palette::ACCENT_2)
+                .add_modifier(Modifier::BOLD),
             _ => Style::default().fg(palette::FAINT),
         };
         styles.push((st, n));
@@ -2256,12 +1894,12 @@ fn chunk_timeline_line(current: u32, total: u32, panel_width: u16, tick: u128) -
 /// universal animation clock so every visual element stays in phase.
 fn pipeline_flowchart_line(current: &str, done: &[String], tick: u128) -> Line<'static> {
     const STAGES: &[(&str, &str)] = &[
-        ("vad",                "VAD"),
-        ("transcribe",         "ASR"),
-        ("translate",          "MT"),
-        ("stitch",             "STITCH"),
-        ("voice_consistency",  "VOICE"),
-        ("write_output_srt",   "OUT"),
+        ("vad", "VAD"),
+        ("transcribe", "ASR"),
+        ("translate", "MT"),
+        ("stitch", "STITCH"),
+        ("voice_consistency", "VOICE"),
+        ("write_output_srt", "OUT"),
     ];
     // 8-step braille spinner. ~120 ms per step = 7 fps, easy on the eye.
     const SPINNER: &[char] = &['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
@@ -2270,7 +1908,11 @@ fn pipeline_flowchart_line(current: &str, done: &[String], tick: u128) -> Line<'
     // Two-slot particle: `· ` shifts to ` ·` every 200 ms. Visible
     // motion without distracting from the labels.
     let particle_phase = (tick / 200) as usize;
-    let arrow = if particle_phase % 2 == 0 { "·→" } else { " ⇒" };
+    let arrow = if particle_phase.is_multiple_of(2) {
+        "·→"
+    } else {
+        " ⇒"
+    };
 
     let mut spans: Vec<Span> = vec![Span::styled(
         "  stage  ",
@@ -2287,8 +1929,7 @@ fn pipeline_flowchart_line(current: &str, done: &[String], tick: u128) -> Line<'
         // "translate" is the catch-all for the long MT stage even
         // before it's emitted as stage_complete, so promote nearby
         // stages too.
-        let is_current = *key == current
-            || (*key == "translate" && current == "transcribe");
+        let is_current = *key == current || (*key == "translate" && current == "transcribe");
         let is_done = done.iter().any(|s| s == key);
         let style = if is_current {
             Style::default()
@@ -2316,8 +1957,7 @@ fn render_log_tail(f: &mut ratatui::Frame, area: Rect, rs: &RunningState) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(palette::FAINT))
-        .title(Span::styled(" log ",
-            Style::default().fg(palette::MUTED)));
+        .title(Span::styled(" log ", Style::default().fg(palette::MUTED)));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2334,7 +1974,8 @@ fn render_log_tail(f: &mut ratatui::Frame, area: Rect, rs: &RunningState) {
                 palette::RED
             } else if trimmed.starts_with("warning") {
                 palette::ACCENT_2
-            } else if trimmed.starts_with("ibvoid-doom-qlock") || trimmed.starts_with("translator") {
+            } else if trimmed.starts_with("ibvoid-doom-qlock") || trimmed.starts_with("translator")
+            {
                 palette::ACCENT
             } else if trimmed.starts_with("chunk_complete") || trimmed.starts_with("complete") {
                 palette::GREEN
@@ -2365,11 +2006,23 @@ fn render_result(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &ResultState
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if rs.success { palette::GREEN } else { palette::RED }))
+        .border_style(Style::default().fg(if rs.success {
+            palette::GREEN
+        } else {
+            palette::RED
+        }))
         .title(Span::styled(
-            if rs.success { " run complete " } else { " run failed " },
+            if rs.success {
+                " run complete "
+            } else {
+                " run failed "
+            },
             Style::default()
-                .fg(if rs.success { palette::GREEN } else { palette::RED })
+                .fg(if rs.success {
+                    palette::GREEN
+                } else {
+                    palette::RED
+                })
                 .add_modifier(Modifier::BOLD),
         ));
     let summary_rect = centered_rect(rows[1], 96, rows[1].height);
@@ -2378,26 +2031,43 @@ fn render_result(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &ResultState
 
     let mut lines: Vec<Line> = vec![
         Line::raw(""),
-        kv("input",    &shorten(rs.input.to_string_lossy().as_ref(), 80)),
-        kv("config",   &format!("{} → {}  ·  profile {}  ·  workers {}  ·  gpu {}",
-            rs.config.source_lang, rs.config.target_lang, rs.config.profile,
-            rs.config.workers, if rs.config.gpu { "on" } else { "off" })),
+        kv("input", &shorten(rs.input.to_string_lossy().as_ref(), 80)),
+        kv(
+            "config",
+            &format!(
+                "{} → {}  ·  profile {}  ·  workers {}  ·  gpu {}",
+                rs.config.source_lang,
+                rs.config.target_lang,
+                rs.config.profile,
+                rs.config.workers,
+                if rs.config.gpu { "on" } else { "off" }
+            ),
+        ),
         kv("duration", &format_duration(rs.duration)),
-        kv("chunks",   &rs.chunk_total.to_string()),
-        kv("gate q",   &rs.quality.map(|q| format!("{:.2}", q)).unwrap_or_else(|| "—".into())),
+        kv("chunks", &rs.chunk_total.to_string()),
+        kv(
+            "gate q",
+            &rs.quality
+                .map(|q| format!("{:.2}", q))
+                .unwrap_or_else(|| "—".into()),
+        ),
     ];
     if let Some(msg) = &rs.last_message {
-        lines.push(kv("last",  msg));
+        lines.push(kv("last", msg));
     }
     if !rs.output_files.is_empty() {
         lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled("outputs",
-            Style::default().fg(palette::MUTED))));
+        lines.push(Line::from(Span::styled(
+            "outputs",
+            Style::default().fg(palette::MUTED),
+        )));
         for out in &rs.output_files {
             lines.push(Line::from(vec![
                 Span::styled("  • ", Style::default().fg(palette::ACCENT)),
-                Span::styled(out.to_string_lossy().to_string(),
-                             Style::default().fg(palette::TEXT)),
+                Span::styled(
+                    out.to_string_lossy().to_string(),
+                    Style::default().fg(palette::TEXT),
+                ),
             ]));
         }
     }
@@ -2415,22 +2085,27 @@ fn render_srt_preview(f: &mut ratatui::Frame, area: Rect, preview: &[String]) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(palette::FAINT))
-        .title(Span::styled(" subtitles preview ",
-            Style::default().fg(palette::MUTED)));
+        .title(Span::styled(
+            " subtitles preview ",
+            Style::default().fg(palette::MUTED),
+        ));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    let lines: Vec<Line> = preview.iter().enumerate().map(|(_, line)| {
-        let trimmed = line.trim_end();
-        let style = if trimmed.contains("-->") {
-            Style::default().fg(palette::ACCENT)
-        } else if trimmed.chars().all(|c| c.is_ascii_digit()) && !trimmed.is_empty() {
-            Style::default().fg(palette::MUTED)
-        } else {
-            Style::default().fg(palette::TEXT)
-        };
-        Line::from(Span::styled(format!("  {}", trimmed), style))
-    }).collect();
+    let lines: Vec<Line> = preview
+        .iter()
+        .map(|line| {
+            let trimmed = line.trim_end();
+            let style = if trimmed.contains("-->") {
+                Style::default().fg(palette::ACCENT)
+            } else if trimmed.chars().all(|c| c.is_ascii_digit()) && !trimmed.is_empty() {
+                Style::default().fg(palette::MUTED)
+            } else {
+                Style::default().fg(palette::TEXT)
+            };
+            Line::from(Span::styled(format!("  {}", trimmed), style))
+        })
+        .collect();
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
@@ -2441,12 +2116,7 @@ fn render_srt_preview(f: &mut ratatui::Frame, area: Rect, preview: &[String]) {
 /// playback. Emerge reveals that same playback cell-by-cell as
 /// progress climbs. Generative paints the flow-field canvas the
 /// `Viz::step` integration has been building each tick.
-fn render_running_animation(
-    f: &mut ratatui::Frame,
-    area: Rect,
-    app: &App,
-    rs: &RunningState,
-) {
+fn render_running_animation(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &RunningState) {
     match app.viz.mode {
         crate::runner_viz::VizMode::Original => {
             render_animation_centered(f, area, app, false);
@@ -2461,12 +2131,7 @@ fn render_running_animation(
 /// input filename), so the same input always emerges in the same
 /// order. Hidden cells render as empty braille (`⠀`) to preserve
 /// the panel dimensions.
-fn render_emerge_panel(
-    f: &mut ratatui::Frame,
-    area: Rect,
-    app: &App,
-    rs: &RunningState,
-) {
+fn render_emerge_panel(f: &mut ratatui::Frame, area: Rect, app: &App, rs: &RunningState) {
     let frame = &app.current_anim().frames[app.frame_idx];
     let max_w = (frame.width + 2).min(area.width.saturating_sub(2));
     let max_h = (frame.height + 2).min(area.height.saturating_sub(1));
@@ -2490,36 +2155,11 @@ fn render_emerge_panel(
     let inner = block.inner(outer);
     f.render_widget(block, outer);
 
-    // Build / reuse the deterministic permutation for this input.
-    // `current_anim` may not directly know the filename, so we key on
-    // the input path which lives on the RunningState.
-    let key = rs.runner.input_path.to_string_lossy();
-    // SAFETY: this is a read-only access pattern conceptually, but we
-    // need write access to lazily build the permutation. We use a
-    // small unsafe-free workaround: ensure_emerge_perm is idempotent
-    // and we already know permutation_for cost. Because render takes
-    // &App we cache the perm in App.viz lazily through main_loop's
-    // step path instead — but the permutation is independent of the
-    // canvas size so it's cheap to just rebuild here if the key
-    // changes. We do that by re-running permutation_for once and
-    // checking against the cached one would normally require a &mut.
-    // Workaround: call the static permutation function each render —
-    // cheap (32-bit hash sort over a few thousand cells).
-    let cell_count = crate::runner_viz::frame_cell_count(frame);
     let progress = if rs.runner.state.chunk_total > 0 {
         rs.runner.state.chunk_current as f32 / rs.runner.state.chunk_total as f32
     } else {
         0.0
     };
-    let perm = crate::runner_viz::permutation_for(&key, cell_count);
-    let threshold = (progress.clamp(0.0, 1.0) * cell_count as f32) as u32;
-    let mut visible = vec![false; cell_count as usize];
-    for (rank, idx) in perm.iter().enumerate() {
-        if (rank as u32) < threshold {
-            visible[*idx as usize] = true;
-        }
-    }
-
     let cols = (inner.width as usize).min(frame.width as usize);
     let rows = (inner.height as usize).min(frame.height as usize);
     let mut lines = Vec::with_capacity(rows);
@@ -2531,7 +2171,7 @@ fn render_emerge_panel(
             let off = row * frame.width as usize + col;
             let cell = &frame.cells[off];
             let (ch, r, g, b) =
-                crate::runner_viz::cell_or_empty(cell, visible[off]);
+                crate::runner_viz::cell_or_empty(cell, app.viz.emerge_visible(off, progress));
             let here = rgb_to_xterm256(r, g, b);
             if run_idx != Some(here) {
                 if !buf.is_empty() {
@@ -2621,8 +2261,16 @@ fn render_animation_centered(f: &mut ratatui::Frame, area: Rect, app: &App, hero
     let frame = &app.current_anim().frames[app.frame_idx];
     // hero_size = true → use full animation dimensions; false → may
     // shrink to fit inside compact panels (Picker / Running / Result).
-    let max_w = if hero_size { frame.width + 2 } else { (frame.width + 2).min(area.width.saturating_sub(2)) };
-    let max_h = if hero_size { frame.height + 2 } else { (frame.height + 2).min(area.height.saturating_sub(1)) };
+    let max_w = if hero_size {
+        frame.width + 2
+    } else {
+        (frame.width + 2).min(area.width.saturating_sub(2))
+    };
+    let max_h = if hero_size {
+        frame.height + 2
+    } else {
+        (frame.height + 2).min(area.height.saturating_sub(1))
+    };
     let want_w = max_w.min(area.width);
     let want_h = max_h.min(area.height);
     if want_w < 6 || want_h < 4 {
@@ -2651,16 +2299,19 @@ fn render_animation_centered(f: &mut ratatui::Frame, area: Rect, app: &App, hero
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color).add_modifier(
-            if app.theme_changed_at
-                .map(|t| t.elapsed().as_millis() < 600)
-                .unwrap_or(false)
-            {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            },
-        ));
+        .border_style(
+            Style::default().fg(border_color).add_modifier(
+                if app
+                    .theme_changed_at
+                    .map(|t| t.elapsed().as_millis() < 600)
+                    .unwrap_or(false)
+                {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                },
+            ),
+        );
     let inner = block.inner(outer);
     f.render_widget(block, outer);
 
@@ -2690,10 +2341,7 @@ fn render_animation_centered(f: &mut ratatui::Frame, area: Rect, app: &App, hero
         }
         if !buf.is_empty() {
             let idx = run_idx.unwrap_or(231);
-            spans.push(Span::styled(
-                buf,
-                Style::default().fg(Color::Indexed(idx)),
-            ));
+            spans.push(Span::styled(buf, Style::default().fg(Color::Indexed(idx))));
         }
         lines.push(Line::from(spans));
     }
@@ -2716,11 +2364,15 @@ fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let is_active = *name == app.current_state_name;
         let available = app.pack.contains_key(*name);
         let style = if is_active {
-            Style::default().fg(palette::ACCENT_2).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(palette::ACCENT_2)
+                .add_modifier(Modifier::BOLD)
         } else if available {
             Style::default().fg(palette::TEXT)
         } else {
-            Style::default().fg(palette::FAINT).add_modifier(Modifier::DIM)
+            Style::default()
+                .fg(palette::FAINT)
+                .add_modifier(Modifier::DIM)
         };
         spans.push(Span::styled(*name, style));
     }
@@ -2754,34 +2406,55 @@ fn render_progress(f: &mut ratatui::Frame, area: Rect, app: &App) {
 fn render_hint(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let pairs: Vec<(&str, &str)> = match &app.screen {
         Screen::Greeting if app.current_anim_has_audio() => vec![
-            ("Enter", "pick"), ("r", "run last"), ("p", "profile"),
-            ("Tab", "next anim"), ("m", "mute"), ("+/-", "volume"),
-            (":", "cmd"), ("q", "quit"),
+            ("Enter", "pick"),
+            ("r", "run last"),
+            ("p", "profile"),
+            ("Tab", "next anim"),
+            ("m", "mute"),
+            ("+/-", "volume"),
+            (":", "cmd"),
+            ("q", "quit"),
         ],
         Screen::Greeting => vec![
-            ("Enter", "pick"), ("r", "run last"), ("p", "profile"),
-            ("Tab", "next anim"), (":", "cmd"), ("q", "quit"),
+            ("Enter", "pick"),
+            ("r", "run last"),
+            ("p", "profile"),
+            ("Tab", "next anim"),
+            (":", "cmd"),
+            ("q", "quit"),
         ],
         Screen::Picker(_) => vec![
-            ("Enter", "next"), ("Tab", "complete path"),
-            ("↑↓", "recents"), ("Esc", "back"), ("q", "quit"),
+            ("Enter", "next"),
+            ("Tab", "complete path"),
+            ("↑↓", "recents"),
+            ("Esc", "back"),
+            ("q", "quit"),
         ],
         Screen::Configure(_) => vec![
-            ("Tab", "next"), ("←→", "change"),
-            ("Enter", "start"), ("Esc", "back"),
+            ("Tab", "next"),
+            ("←→", "change"),
+            ("Enter", "start"),
+            ("Esc", "back"),
         ],
         Screen::Running(_) => vec![
-            ("g", "viz mode"), ("c", "cancel"),
-            ("q/Esc", "abort"), (":", "cmd"),
+            ("g", "viz mode"),
+            ("c", "cancel"),
+            ("q/Esc", "abort"),
+            (":", "cmd"),
         ],
         Screen::Result(_) => vec![
-            ("Enter", "new run"), ("r", "retry"), ("s", "save as"),
-            ("o", "open folder"), ("q", "quit"),
+            ("Enter", "new run"),
+            ("r", "retry"),
+            ("s", "save as"),
+            ("o", "open folder"),
+            ("q", "quit"),
         ],
     };
     let mut spans: Vec<Span> = Vec::new();
     for (i, (k, label)) in pairs.iter().enumerate() {
-        if i > 0 { spans.push(Span::raw("    ")); }
+        if i > 0 {
+            spans.push(Span::raw("    "));
+        }
         spans.push(Span::styled(*k, Style::default().fg(palette::PINK)));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(*label, Style::default().fg(palette::MUTED)));
@@ -2816,103 +2489,15 @@ fn shorten(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         let take = max.saturating_sub(1);
-        let tail: String = chars.iter().rev().take(take).collect::<Vec<_>>().into_iter().rev().collect();
+        let tail: String = chars
+            .iter()
+            .rev()
+            .take(take)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         format!("…{}", tail)
-    }
-}
-
-/// Strip wrapping quotes and trailing whitespace from a path the user
-/// pasted or dragged in. Drag-and-drop on Windows often produces a
-/// quote-wrapped path with a trailing newline; the engine refuses
-/// those silently. Doing it once at the boundary makes the picker
-/// "just work" with any reasonable paste.
-fn sanitize_path_input(raw: &str) -> String {
-    let trimmed = raw.trim();
-    let stripped = trimmed
-        .strip_prefix('"').and_then(|s| s.strip_suffix('"'))
-        .or_else(|| trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-        .unwrap_or(trimmed);
-    stripped.to_string()
-}
-
-/// Tab-completion for a path the user is typing in the Picker. If the
-/// input names a directory, append the path separator. Otherwise list
-/// the parent directory and extend the input to the longest common
-/// prefix among entries that share the current basename prefix.
-fn complete_path(input: &str) -> Option<String> {
-    let p = std::path::Path::new(input);
-    if p.is_dir() && !input.ends_with(['/', '\\']) {
-        let mut out = input.to_string();
-        out.push(std::path::MAIN_SEPARATOR);
-        return Some(out);
-    }
-    let (dir, prefix) = match p.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => {
-            let base = p.file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            (parent.to_path_buf(), base)
-        }
-        _ => (std::path::PathBuf::from("."), input.to_string()),
-    };
-    let entries = std::fs::read_dir(&dir).ok()?;
-    let mut matches: Vec<String> = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prefix) {
-            matches.push(name);
-        }
-    }
-    if matches.is_empty() {
-        return None;
-    }
-    let common = longest_common_prefix(&matches);
-    if common.len() <= prefix.len() {
-        return None;
-    }
-    let mut completed = if dir.as_os_str() == std::ffi::OsStr::new(".") {
-        String::new()
-    } else {
-        let mut s = dir.to_string_lossy().to_string();
-        if !s.ends_with(['/', '\\']) {
-            s.push(std::path::MAIN_SEPARATOR);
-        }
-        s
-    };
-    completed.push_str(&common);
-    if matches.len() == 1 {
-        let full = dir.join(&common);
-        if full.is_dir() {
-            completed.push(std::path::MAIN_SEPARATOR);
-        }
-    }
-    Some(completed)
-}
-
-fn longest_common_prefix(strs: &[String]) -> String {
-    if strs.is_empty() {
-        return String::new();
-    }
-    let mut prefix = strs[0].clone();
-    for s in strs.iter().skip(1) {
-        let new_len = prefix
-            .chars()
-            .zip(s.chars())
-            .take_while(|(a, b)| a == b)
-            .count();
-        prefix.truncate(prefix.char_indices().nth(new_len).map(|(i, _)| i).unwrap_or(prefix.len()));
-    }
-    prefix
-}
-
-/// Cycle through fast → balanced → strict → fast. Used by the `p`
-/// shortcut on the Greeting screen to swap the profile without
-/// opening the full Configure screen.
-fn cycle_profile(current: &str) -> &'static str {
-    match current {
-        "fast" => "balanced",
-        "balanced" => "strict",
-        _ => "fast",
     }
 }
 
@@ -3006,7 +2591,7 @@ mod tests {
     #[test]
     fn cube_component_boundaries() {
         // Sanity-check the standard xterm cube boundaries.
-        assert_eq!(rgb_to_xterm256(0, 0, 95), 16 + 1);  // 0,0,95 = (0,0,1)
+        assert_eq!(rgb_to_xterm256(0, 0, 95), 16 + 1); // 0,0,95 = (0,0,1)
         assert_eq!(rgb_to_xterm256(95, 0, 0), 16 + 36); // 95,0,0 = (1,0,0)
         assert_eq!(rgb_to_xterm256(255, 255, 0), 16 + 36 * 5 + 6 * 5); // (5,5,0)
     }
