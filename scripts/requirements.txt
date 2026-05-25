@@ -9,7 +9,7 @@
 
 # Neural MT inference backend. NLLB-200 weights are loaded into a
 # CTranslate2 model via SentencePiece tokenisation.
-ctranslate2>=4.0
+ctranslate2>=4.7.2
 sentencepiece>=0.2.0
 
 # Numerical kernels for the diarization speech-feature pipeline.
