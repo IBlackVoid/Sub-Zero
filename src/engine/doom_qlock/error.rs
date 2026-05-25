@@ -1,32 +1,13 @@
 use std::path::PathBuf;
 
-#[derive(Debug)]
+use thiserror::Error;
+
+#[derive(Debug, Error)]
 pub enum DoomQlockError {
-    WorkloadProbe { input: PathBuf, source: String },
-    PlanValidation { input: PathBuf, source: String },
+    #[error("failed to profile workload for {}: {message}", input.display())]
+    WorkloadProbe { input: PathBuf, message: String },
+    #[error("failed to validate execution plan for {}: {message}", input.display())]
+    PlanValidation { input: PathBuf, message: String },
 }
 
 pub type DoomQlockResult<T> = Result<T, DoomQlockError>;
-
-impl std::fmt::Display for DoomQlockError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::WorkloadProbe { input, source } => {
-                write!(
-                    f,
-                    "failed to profile workload for {}: {source}",
-                    input.display()
-                )
-            }
-            Self::PlanValidation { input, source } => {
-                write!(
-                    f,
-                    "failed to validate execution plan for {}: {source}",
-                    input.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for DoomQlockError {}
