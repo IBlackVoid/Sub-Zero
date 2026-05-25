@@ -1,0 +1,169 @@
+{
+  "version": "2.0",
+  "kind": "learned-quality-gate",
+  "model_kind": "logistic+isotonic+conformal",
+  "threshold": 0.5,
+  "bias": -0.2977307729818916,
+  "features": [
+    "user_age_bucket",
+    "user_lifetime_days",
+    "user_prior_session_count",
+    "item_category_match_score",
+    "item_price_bucket",
+    "item_freshness_days",
+    "item_popularity_log",
+    "session_dwell_time_so_far"
+  ],
+  "mean": [
+    3.0964285714285715,
+    190.89285714285714,
+    9.42142857142857,
+    0.4088178571428573,
+    3.3267857142857142,
+    22.232142857142858,
+    3.360214285714286,
+    63.42225
+  ],
+  "std": [
+    1.1823046932813484,
+    63.15691302830839,
+    5.111356902795488,
+    0.1403231183314614,
+    1.5579280048729285,
+    8.946250354654916,
+    0.9270689201203232,
+    24.55089035936374
+  ],
+  "weights": [
+    0.10039407945800478,
+    0.22244497160889684,
+    0.3365305260236939,
+    0.27587453851223687,
+    -0.06536730216474973,
+    -0.11744671401286941,
+    0.11326896590584572,
+    0.12643802450759956
+  ],
+  "calibration": {
+    "kind": "isotonic",
+    "x": [
+      0.10204932768019323,
+      0.18151889664324947,
+      0.1986654609047099,
+      0.3063664674169366,
+      0.3090930812214359,
+      0.3768171946624199,
+      0.3812092450116985,
+      0.42865201149146226,
+      0.433109754244677,
+      0.5509765879961598,
+      0.5597579687151014,
+      0.765161016828555,
+      0.7915000985807502,
+      0.8752549731502799
+    ],
+    "y": [
+      0.0,
+      0.0,
+      0.23076923076923078,
+      0.23076923076923078,
+      0.3333333333333333,
+      0.3333333333333333,
+      0.4,
+      0.4,
+      0.4375,
+      0.4375,
+      0.7368421052631579,
+      0.7368421052631579,
+      1.0,
+      1.0
+    ],
+    "out_of_bounds": "clip"
+  },
+  "conformal": {
+    "alpha": 0.1,
+    "q_hat": 0.7368421052631579,
+    "calibration_set_size": 80,
+    "isotonic_cal_set_size": 80,
+    "split_kind": "disjoint_iso_and_conf",
+    "interpretation": "PASS if p_cal - q_hat > threshold; REJECT if p_cal + q_hat < threshold; ABSTAIN otherwise."
+  },
+  "holdout_metrics": {
+    "crisp_acc": 0.75,
+    "crisp_precision": 0.8,
+    "crisp_recall": 0.5714285714285714,
+    "crisp_f1": 0.6666666666666666,
+    "crisp_f1_bootstrap_ci95": [
+      0.5283018867924528,
+      0.8
+    ],
+    "conformal_test": {
+      "n": 80,
+      "pass": 0,
+      "reject": 0,
+      "abstain": 80,
+      "abstain_rate": 1.0,
+      "coverage": 1.0,
+      "decisive_accuracy": null
+    },
+    "conformal_calibration_selfcheck": {
+      "n": 80,
+      "pass": 0,
+      "reject": 0,
+      "abstain": 80,
+      "abstain_rate": 1.0,
+      "coverage": 1.0,
+      "decisive_accuracy": null
+    },
+    "alpha_sweep": [
+      {
+        "alpha": 0.1,
+        "q_hat": 0.7368421052631579,
+        "test_coverage": 1.0,
+        "test_abstain_rate": 1.0,
+        "test_decisive_accuracy": null,
+        "test_pass": 0,
+        "test_reject": 0,
+        "test_abstain": 80
+      },
+      {
+        "alpha": 0.3,
+        "q_hat": 0.5625,
+        "test_coverage": 1.0,
+        "test_abstain_rate": 1.0,
+        "test_decisive_accuracy": null,
+        "test_pass": 0,
+        "test_reject": 0,
+        "test_abstain": 80
+      },
+      {
+        "alpha": 0.5,
+        "q_hat": 0.3333333333333333,
+        "test_coverage": 0.975,
+        "test_abstain_rate": 0.7375,
+        "test_decisive_accuracy": 0.9047619047619048,
+        "test_pass": 7,
+        "test_reject": 14,
+        "test_abstain": 59
+      }
+    ]
+  },
+  "holdout_size": 80,
+  "training_seed": 42,
+  "data_sha256": "da5f52ed07d17a96b25a2d4c5a64665a9a707017055b659cce87762731f45994",
+  "git_commit": "b41c14aced99cccb20ab9ab7c6c3c443b9b14950",
+  "training_set_size": 560,
+  "exclude_delta_features": false,
+  "feature_audit": {
+    "path": "examples\\f3_case_study_recsys\\feature_audit.json",
+    "sha256": "b3437adb235a08612ee15ff6de8db39edbb52d4cbd5f7208433e4679d5520e71",
+    "flagged_features": [
+      "add_to_cart",
+      "click_dwell_time",
+      "downstream_conversion",
+      "scroll_depth",
+      "subsequent_purchase_amount"
+    ],
+    "leak_threshold": 0.5
+  }
+}
