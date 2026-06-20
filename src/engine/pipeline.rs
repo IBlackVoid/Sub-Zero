@@ -604,10 +604,12 @@ impl SubtitlePipeline {
         }
 
         let translate_started = std::time::Instant::now();
-        let mut translated = self
-            .translator
-            .translate_all_with_extra_tags(&cues, &speaker_tags)
-            .map_err(|error| error.to_string())?;
+        // CPT collapse-phase routing: translate a cheap NLLB prefix, certify
+        // backend-document collapse early, and if certified reroute the WHOLE
+        // document to the local LLM rung instead of finishing a doomed NLLB
+        // pass. Falls back to a normal full NLLB translate when the LLM rung is
+        // unavailable or the reroute fails — never worse than before.
+        let mut translated = self.translate_with_collapse_routing(&cues, &speaker_tags)?;
         // Q1: a non-Strict profile may have emitted best-effort output below the
         // neural MT quality floor. Capture the reason now so the sidecar verdict
         // can record verdict.pass=false while the SRT is still written.
@@ -1183,6 +1185,108 @@ impl SubtitlePipeline {
             }
         }
         Ok(())
+    }
+
+    /// Document-level translation with CPT collapse-phase routing.
+    ///
+    /// Translates a cheap NLLB prefix, feeds it to the collapse-phase router, and
+    /// if backend-document collapse is certified, reroutes the WHOLE document to
+    /// the local LLM rung (avoiding the rest of a doomed NLLB pass). Degrades
+    /// safely: when the LLM rung is unavailable (no model / phrase-table / test
+    /// mode) or the reroute errors, it does a normal full NLLB translate, so it
+    /// is never worse than the pre-CPT behavior.
+    ///
+    /// NOTE: the reroute path is exercised only with a real LLM model present and
+    /// is pending a full live E2E run before release.
+    fn translate_with_collapse_routing(
+        &self,
+        cues: &[SubtitleCue],
+        speaker_tags: &[Vec<String>],
+    ) -> Result<Vec<SubtitleCue>, String> {
+        use crate::engine::collapse_phase_router::{
+            BackendRouteDecision, CollapsePhaseConfig, CollapsePhaseRouter,
+        };
+
+        let full_translate = || {
+            self.translator
+                .translate_all_with_extra_tags(cues, speaker_tags)
+                .map_err(|error| error.to_string())
+        };
+
+        let cfg = CollapsePhaseConfig::default();
+        // Routing only makes sense when the LLM rung can actually be the
+        // destination, the tags line up for safe slicing, and there is more
+        // document than the prefix to save.
+        let llm_available =
+            !self.config.force_phrase_table && crate::engine::llm_mt::resolve_llm_paths().is_some();
+        if !llm_available || speaker_tags.len() != cues.len() || cues.len() <= cfg.min_prefix_cues {
+            return full_translate();
+        }
+
+        let m = cfg.min_prefix_cues;
+        // Phase 1: cheap NLLB prefix.
+        let prefix = self
+            .translator
+            .translate_all_with_extra_tags(&cues[..m], &speaker_tags[..m])
+            .map_err(|error| error.to_string())?;
+
+        // Certify collapse from the prefix.
+        let mut router = CollapsePhaseRouter::new();
+        let certified = prefix.iter().any(|cue| {
+            matches!(
+                router.observe(&cue.text, &cfg),
+                BackendRouteDecision::AbortAndRouteWholeDocument { .. }
+            )
+        });
+
+        if certified {
+            // Reroute the whole document to the LLM rung; on any failure fall
+            // back to the normal full NLLB translate (never worse than before).
+            return match self.translate_whole_document_via_llm(cues) {
+                Ok(llm_cues) => Ok(llm_cues),
+                Err(error) => {
+                    eprintln!(
+                        "warning: collapse reroute to LLM failed ({error}); using NLLB output"
+                    );
+                    full_translate()
+                }
+            };
+        }
+
+        // Not collapsed: translate the remaining cues with NLLB and combine, so
+        // the prefix work is reused rather than redone.
+        let mut out = prefix;
+        let rest = self
+            .translator
+            .translate_all_with_extra_tags(&cues[m..], &speaker_tags[m..])
+            .map_err(|error| error.to_string())?;
+        out.extend(rest);
+        Ok(out)
+    }
+
+    /// Translate the whole document via the LLM rung, in cue chunks so each
+    /// request stays within the model's context. One sidecar is spawned and
+    /// reused across chunks. Any chunk error (or cue-count mismatch) is an error,
+    /// so the caller can fall back to NLLB.
+    fn translate_whole_document_via_llm(
+        &self,
+        cues: &[SubtitleCue],
+    ) -> Result<Vec<SubtitleCue>, String> {
+        const CHUNK: usize = 24;
+        let backend = NeuralSegmentBackend::new(self);
+        let mut out = Vec::with_capacity(cues.len());
+        for chunk in cues.chunks(CHUNK) {
+            let translated = backend.translate_llm(chunk)?;
+            if translated.len() != chunk.len() {
+                return Err(format!(
+                    "llm chunk returned {} cues, expected {}",
+                    translated.len(),
+                    chunk.len()
+                ));
+            }
+            out.extend(translated);
+        }
+        Ok(out)
     }
 
     /// Build a one-off Translator at a specific escalation rung (model + beam).

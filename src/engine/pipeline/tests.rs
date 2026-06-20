@@ -1188,3 +1188,96 @@ fn escalation_backend_caches_one_translator_per_rung() {
         "each rung owns exactly one cached Translator"
     );
 }
+
+/// Live E2E of the CPT collapse-routing GLUE: real NLLB collapses the Silent
+/// Hill JA prefix, CPT certifies, and the whole document reroutes to the local
+/// LLM rung. Needs real NLLB (ctranslate2 + model) and the llama-server model;
+/// NLLB is forced to CPU so it does not contend with the GPU LLM. Ignored by
+/// default — run with: cargo test live_collapse_routing -- --ignored --nocapture
+#[test]
+#[ignore = "live: real NLLB + llama-server; run with --ignored"]
+fn live_collapse_routing_reroutes_silent_hill() {
+    let srt = "benchmarks/runs/2026-04-22_silent_hill_f1/SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs].ja.srt";
+    let all = match crate::engine::srt::parse_srt_file(std::path::Path::new(srt)) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("skipping: silent hill JA srt not found");
+            return;
+        }
+    };
+    // First 256 cues: the collapse region is dense here, so the 64-cue prefix
+    // certifies and the reroute exercises several LLM chunks — without a 10-min run.
+    let cues: Vec<SubtitleCue> = all.into_iter().take(256).collect();
+    let tags = vec![Vec::<String>::new(); cues.len()];
+
+    let pipeline = SubtitlePipeline::new(PipelineConfig {
+        source_lang: "ja".to_string(),
+        target_lang: "en".to_string(),
+        offline: true,
+        transcribe: false,
+        whisper_bin: None,
+        whisper_model: None,
+        whisper_args: Vec::new(),
+        audio_lang: None,
+        audio_stream_index: None,
+        skip_existing: false,
+        vad: false,
+        vad_threshold_db: -35.0,
+        vad_min_silence: 0.35,
+        vad_pad: 0.20,
+        verify: false,
+        verify_min_speech_overlap: 0.35,
+        gpu: false,
+        require_gpu: false,
+        parallel: false,
+        stream: false,
+        stream_async: false,
+        max_workers: 4,
+        chunk_duration_secs: 300.0,
+        force_phrase_table: false, // REAL NLLB
+        speaker_aware: false,
+        speaker_diarize: false,
+        speaker_max_speakers: 4,
+        mt_model: None,
+        mt_batch_size: None,
+        mt_max_batch_tokens: None,
+        mt_oom_retries: None,
+        mt_allow_cpu_fallback: true,
+        mt_force_cpu: true, // keep GPU free for the LLM rung
+        mt_daemon: true,
+        mt_enforce_quality_floor: false,
+        auto_repair_sidecar: true,
+        trace_runtime: false,
+        events_json: false,
+        events_file: None,
+        http_events: None,
+        ws_events: None,
+        quality_profile: QualityProfile::Balanced,
+    })
+    .expect("pipeline should build");
+
+    let out = pipeline
+        .translate_with_collapse_routing(&cues, &tags)
+        .expect("collapse routing should succeed");
+    assert_eq!(out.len(), cues.len(), "cue count preserved");
+
+    // Dominant multi-word phrase density: NLLB-only collapses this region to
+    // ~26%; after reroute to the LLM it must be far lower (clean output).
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for c in &out {
+        let k = c.text.to_lowercase();
+        if k.split_whitespace().count() >= 3 {
+            *counts.entry(k).or_default() += 1;
+        }
+    }
+    let dom = counts.values().copied().max().unwrap_or(0);
+    let density = dom as f64 / out.len() as f64;
+    eprintln!("rerouted dominant multi-word density = {density:.3} ({dom}/{})", out.len());
+    for c in out.iter().take(15) {
+        eprintln!("  {}", c.text);
+    }
+    assert!(
+        density < 0.15,
+        "rerouted output still collapsed (density {density:.3}) — reroute did not clean it"
+    );
+}
