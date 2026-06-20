@@ -1,4 +1,4 @@
-// Sub-Zero Pipeline — Dual-path convergence.
+// VoiDex Pipeline — Dual-path convergence.
 //
 // Composes the speed pipeline (parallel chunked transcription) with the
 // accuracy pipeline (context-aware neural translation + post-processing).
@@ -9,8 +9,10 @@ mod confidence;
 mod consistency;
 mod diarization;
 mod error;
+mod escalation;
 mod health;
 mod learned_gate;
+mod loop_collapse;
 mod paths;
 mod profile;
 mod register;
@@ -34,7 +36,7 @@ use crate::engine::stitcher::stitch_chunks;
 use crate::engine::transcribe::{
     QualityProfile, TranscribeConfig, Transcriber, TranscriptionResult,
 };
-use crate::engine::translate::{Translator, TranslatorConfig};
+use crate::engine::translate::{mt_daemon_script_available, Translator, TranslatorConfig};
 use audio::{create_temp_rescue_dir, extract_audio_segment_to_wav, extract_audio_to_wav};
 use compact::compact_adjacent_cues;
 use confidence::{
@@ -76,6 +78,7 @@ use verify::verify_srt_against_audio;
 
 use diarization::{audio_diarize_speakers_for_cues, AudioDiarizationStats};
 use learned_gate::evaluate as evaluate_learned_gate;
+use loop_collapse::collapse_asr_decode_loops;
 use register::infer_speaker_register_tags;
 use relationship::write_relationship_graph_sidecar;
 use speaker::{build_speaker_tags_with_context, infer_speakers};
@@ -209,6 +212,7 @@ impl SubtitlePipeline {
             mt_force_cpu: config.mt_force_cpu,
             mt_daemon: config.mt_daemon,
             mt_enforce_quality_floor: config.mt_enforce_quality_floor,
+            mt_beam_size: None,
             quality_profile: config.quality_profile,
         })
         .map_err(|err| PipelineError::Initialization {
@@ -308,6 +312,7 @@ impl SubtitlePipeline {
                 trace_path.as_deref(),
                 None,
                 None,
+                None,
             )?;
             record_runtime_stage(
                 &events,
@@ -376,6 +381,18 @@ impl SubtitlePipeline {
         let load_source_started = std::time::Instant::now();
         let mut cues = parse_srt_file(&source_srt).map_err(|error| error.to_string())?;
         let mut source_confidence = load_cue_asr_confidence_from_whisper_json(&source_srt, &cues);
+        // Strip whisper decode-loops from the source transcript before any
+        // translation: a stuck-decoder run of identical cues is low-entropy
+        // and slips past the per-segment non-speech guards, but if left in
+        // place it collapses MT quality and fails the quality floor for the
+        // entire job. See `loop_collapse`.
+        let loop_stats = collapse_asr_decode_loops(&mut cues, &mut source_confidence);
+        if loop_stats.collapsed_anything() {
+            eprintln!(
+                "warning: ibvoid-doom-qlock asr_loop_collapsed runs={} cues_removed={}",
+                loop_stats.runs, loop_stats.cues_removed
+            );
+        }
         record_runtime_stage(
             &events,
             runtime_trace.as_mut(),
@@ -409,6 +426,15 @@ impl SubtitlePipeline {
                 audio_for_verify = Some(rescue.audio_wav_path);
                 cues = parse_srt_file(&source_srt).map_err(|error| error.to_string())?;
                 source_confidence = load_cue_asr_confidence_from_whisper_json(&source_srt, &cues);
+                // Same decode-loop collapse on the rescued transcript.
+                let rescue_loop_stats =
+                    collapse_asr_decode_loops(&mut cues, &mut source_confidence);
+                if rescue_loop_stats.collapsed_anything() {
+                    eprintln!(
+                        "warning: ibvoid-doom-qlock asr_loop_collapsed runs={} cues_removed={}",
+                        rescue_loop_stats.runs, rescue_loop_stats.cues_removed
+                    );
+                }
                 let rescue_health = assess_srt_health(&cues)?;
                 if rescue_health.is_pathological(self.config.quality_profile) {
                     if self.config.quality_profile == QualityProfile::Strict {
@@ -582,6 +608,10 @@ impl SubtitlePipeline {
             .translator
             .translate_all_with_extra_tags(&cues, &speaker_tags)
             .map_err(|error| error.to_string())?;
+        // Q1: a non-Strict profile may have emitted best-effort output below the
+        // neural MT quality floor. Capture the reason now so the sidecar verdict
+        // can record verdict.pass=false while the SRT is still written.
+        let best_effort_floor_reason = self.translator.take_best_effort_floor_reason();
         record_runtime_stage(
             &events,
             runtime_trace.as_mut(),
@@ -603,7 +633,12 @@ impl SubtitlePipeline {
         }
 
         let scene_rescue_started = std::time::Instant::now();
-        self.rescue_low_quality_scene_translations(&cues, &mut translated)?;
+        self.rescue_low_quality_scene_translations(
+            &cues,
+            &mut translated,
+            &events,
+            runtime_trace.as_mut(),
+        )?;
         if !register_tags.is_empty() {
             register::apply_register_post_edit(&mut translated, &register_tags);
         }
@@ -709,6 +744,7 @@ impl SubtitlePipeline {
             trace_path.as_deref(),
             speaker_info,
             Some(&voice_stats),
+            best_effort_floor_reason.as_deref(),
         )?;
         record_runtime_stage(
             &events,
@@ -764,6 +800,7 @@ impl SubtitlePipeline {
         Ok(output)
     }
 
+    #[allow(clippy::too_many_arguments)] // sidecar inputs are independent optionals; a one-off struct adds no clarity
     fn write_metadata_sidecar(
         &self,
         input: &Path,
@@ -772,6 +809,7 @@ impl SubtitlePipeline {
         runtime_trace_path: Option<&Path>,
         speaker_info: Option<serde_json::Value>,
         voice_stats: Option<&crate::engine::voice_consistency::VoiceConsistencyStats>,
+        best_effort_floor_reason: Option<&str>,
     ) -> Result<(), String> {
         let structural = assess_srt_health(translated)?;
         let semantic = assess_translation_semantics(translated, &self.config.target_lang);
@@ -784,21 +822,37 @@ impl SubtitlePipeline {
         // Pre-compute verdict incorporating chunk failure rate.
         // If > 30% of parallel chunks failed, the output is incomplete regardless
         // of per-cue quality metrics (which only evaluate what exists, not what's missing).
-        let chunk_failure_ratio = checkpoint_summary.as_ref()
+        let chunk_failure_ratio = checkpoint_summary
+            .as_ref()
             .and_then(|cp| {
                 let completed = cp.get("completed_chunks")?.as_u64()?;
                 let failed = cp.get("failed_chunks")?.as_u64()?;
                 let total = completed + failed;
-                if total > 0 { Some(failed as f64 / total as f64) } else { None }
+                if total > 0 {
+                    Some(failed as f64 / total as f64)
+                } else {
+                    None
+                }
             })
             .unwrap_or(0.0);
         let semantic_fail = semantic.is_pathological(self.config.quality_profile);
         let coverage_degraded = chunk_failure_ratio > 0.3;
-        let verdict_pass = !semantic_fail && !coverage_degraded;
-        let verdict_reason = if semantic_fail {
+        // Q1: when the MT quality floor failed but the profile (Fast/Balanced)
+        // emitted best-effort subtitles anyway, the SRT is written but the
+        // verdict must record pass=false with the floor reason retained so the
+        // honest quality signal reaches the user / TUI. See agent-memory
+        // finding_ja_en_casual_mt_quality (JA→EN casual MT limit).
+        let best_effort_fail = best_effort_floor_reason.is_some();
+        let verdict_pass = !semantic_fail && !coverage_degraded && !best_effort_fail;
+        let verdict_reason = if let Some(reason) = best_effort_floor_reason {
+            reason.to_string()
+        } else if semantic_fail {
             semantic.summary()
         } else if coverage_degraded {
-            format!("partial: {:.0}% of chunks failed during transcription", chunk_failure_ratio * 100.0)
+            format!(
+                "partial: {:.0}% of chunks failed during transcription",
+                chunk_failure_ratio * 100.0
+            )
         } else {
             "quality gate passed".to_string()
         };
@@ -969,98 +1023,175 @@ impl SubtitlePipeline {
         }
     }
 
+    // Per-segment MT escalation ladder (guardrails #1–#6).
+    //
+    // Policy rationale + evidence: see agent-memory finding_ja_en_casual_mt_quality
+    // (JA→EN casual MT limit). A failed scene is retried ONLY at a stronger rung,
+    // bounded by per-profile reach and a session budget cap; one attempt per scene.
     fn rescue_low_quality_scene_translations(
         &self,
         source_cues: &[SubtitleCue],
         translated: &mut [SubtitleCue],
+        events: &EventSink,
+        mut runtime_trace: Option<&mut RuntimeTrace>,
     ) -> Result<(), String> {
-        if self.config.quality_profile != QualityProfile::Strict
-            || !self.config.target_lang.eq_ignore_ascii_case("en")
+        if !self.config.target_lang.eq_ignore_ascii_case("en")
             || source_cues.len() != translated.len()
         {
             return Ok(());
         }
 
+        let base_beam = profile::default_mt_beam_for_profile(self.config.quality_profile);
+        // WS-A: add the local LLM (Qwen3) rung when the llama-server binary and
+        // GGUF model both resolve — the tier that rescues casual speech NLLB
+        // degenerates on. Absent (or in phrase-table/test mode), the ladder is
+        // the historical NLLB-only ladder, so nothing regresses without a model.
+        let llm_rung = if self.config.force_phrase_table {
+            None
+        } else {
+            crate::engine::llm_mt::resolve_llm_paths().map(|_| escalation::MtBackendStep {
+                label: "qwen3-4b",
+                model_name: "qwen3-4b".to_string(),
+                beam_size: 1,
+                kind: escalation::BackendKind::Llm,
+            })
+        };
+        let policy = escalation::EscalationPolicy::for_profile(
+            self.config.quality_profile,
+            base_beam,
+            llm_rung,
+        );
+        // Guardrail #1: Fast never escalates up — nothing to do here.
+        if !policy.can_escalate() {
+            return Ok(());
+        }
+
+        let total_segments = scenes::split_scene_ranges(translated).len();
         let mut low_scenes = collect_low_quality_scene_ranges(translated);
         if low_scenes.is_empty() {
             return Ok(());
         }
 
+        // Process worst-deficit scenes first so the budget is spent where it matters.
         low_scenes.sort_by(|a, b| {
             let lhs = b.floor - b.score;
             let rhs = a.floor - a.score;
             lhs.total_cmp(&rhs)
         });
 
-        let retry_limit = std::env::var("SUB_ZERO_SCENE_RETRY_LIMIT")
-            .ok()
-            .and_then(|raw| raw.parse::<usize>().ok())
-            .unwrap_or(6)
-            .max(1);
-        let retry_count = low_scenes.len().min(retry_limit);
-        if retry_count == 0 {
-            return Ok(());
-        }
+        // Map each failing scene to its scene index (the telemetry `segment`).
+        let scene_ranges = scenes::split_scene_ranges(translated);
+        let failing: Vec<escalation::FailingSegment> = low_scenes
+            .iter()
+            .map(|scene| escalation::FailingSegment {
+                index: scene_ranges
+                    .iter()
+                    .position(|(start, end)| *start == scene.start && *end == scene.end)
+                    .unwrap_or(0),
+                start: scene.start,
+                end: scene.end,
+                base_score: scene.score,
+                floor: scene.floor,
+            })
+            .collect();
 
         eprintln!(
-            "ibvoid-doom-qlock: strict scene-rescue retrying {retry_count}/{} low-quality scenes",
-            low_scenes.len()
+            "ibvoid-doom-qlock: scene-escalation evaluating {} low-quality scenes (profile={})",
+            failing.len(),
+            self.config.quality_profile.as_str()
         );
 
-        let retry_translator = self.build_scene_retry_translator()?;
-        let mut improved = 0usize;
-        for scene in low_scenes.into_iter().take(retry_count) {
-            let source_scene = &source_cues[scene.start..scene.end];
-            let retried = retry_translator
-                .translate_all(source_scene)
-                .map_err(|error| error.to_string())?;
-            if retried.len() != source_scene.len() {
-                eprintln!(
-                    "warning: scene-rescue skipped scene {}-{} due to cue count mismatch (expected {}, got {})",
-                    scene.start,
-                    scene.end,
-                    source_scene.len(),
-                    retried.len()
-                );
-                continue;
-            }
+        let backend = NeuralSegmentBackend::new(self);
+        let scorer = RealSceneScorer;
+        let report = escalation::run_escalation_ladder(
+            &policy,
+            &backend,
+            &scorer,
+            source_cues,
+            translated,
+            &failing,
+            total_segments,
+        );
 
-            let (_, original_score) = scene_quality_for_slice(&translated[scene.start..scene.end]);
-            let (_, retry_score) = scene_quality_for_slice(&retried);
-            let original_health =
-                assess_translation_semantics(&translated[scene.start..scene.end], "en");
-            let retry_health = assess_translation_semantics(&retried, "en");
-            let original_penalty = scene_semantic_penalty(&original_health);
-            let retry_penalty = scene_semantic_penalty(&retry_health);
-
-            if retry_score <= original_score + 0.01
-                || retry_penalty > original_penalty - 0.01
-                || retry_health.malformed_contraction_ratio
-                    > original_health.malformed_contraction_ratio + f64::EPSILON
-            {
-                continue;
+        // Guardrail #5: emit one structured `mt_escalation` event per attempt to
+        // the same trace/event stream the TUI reads, plus a human stderr line.
+        for event in &report.events {
+            let payload = event.as_event();
+            events.emit(&payload);
+            if let Some(trace) = runtime_trace.as_deref_mut() {
+                trace.record_stage("mt_escalation", std::time::Instant::now(), payload.clone());
             }
-
-            for (dst, src) in translated[scene.start..scene.end]
-                .iter_mut()
-                .zip(retried.into_iter())
-            {
-                dst.text = src.text;
-            }
-            improved += 1;
             eprintln!(
-                "ibvoid-doom-qlock: scene-rescue improved scene {}-{} score {:.3} -> {:.3}",
-                scene.start, scene.end, original_score, retry_score
+                "ibvoid-doom-qlock: mt_escalation segment={} {}->{} outcome={} score {:.3}->{:.3}",
+                event.segment,
+                event.from,
+                event.to,
+                if event.recovered {
+                    "recovered"
+                } else {
+                    "still_failed"
+                },
+                event.gate_score_before,
+                event.gate_score_after,
             );
         }
 
-        if improved == 0 {
-            eprintln!("ibvoid-doom-qlock: scene-rescue found no beneficial rewrites.");
+        // Splice recovered scenes back in. Untouched scenes keep their best-effort
+        // 600M text (guardrail #2 — passing scenes are never re-translated).
+        for recovered in &report.recovered_texts {
+            for (dst, text) in translated[recovered.start..recovered.end]
+                .iter_mut()
+                .zip(recovered.texts.iter())
+            {
+                dst.text = text.clone();
+            }
+        }
+
+        // Guardrail #3: budget cap tripped → remaining scenes stay best-effort.
+        // This is the NLLB-incompatible-content signal, not a transient failure.
+        if report.budget_exceeded {
+            eprintln!(
+                "warning: ibvoid-doom-qlock mt_escalation_budget_exceeded ratio>{:.0}% \
+                 remaining low-quality scenes emitted best-effort (content class \
+                 appears incompatible with NLLB; more compute will not help).",
+                escalation::ESCALATION_BUDGET_RATIO * 100.0
+            );
+        }
+
+        let recovered = report
+            .outcomes
+            .iter()
+            .filter(|(_, o)| matches!(o, escalation::SegmentOutcome::Recovered { .. }))
+            .count();
+        if recovered == 0 {
+            eprintln!("ibvoid-doom-qlock: scene-escalation found no beneficial rewrites.");
+        }
+
+        // Guardrail #1 tail: Strict hard-fails if any escalated scene could not
+        // be brought above its floor (best-effort-exhausted or budget-skipped).
+        // Fast/Balanced keep the best-effort scenes (no error).
+        if policy.hard_fail_on_exhaustion() {
+            let unrecovered = report
+                .outcomes
+                .iter()
+                .filter(|(_, o)| !matches!(o, escalation::SegmentOutcome::Recovered { .. }))
+                .count();
+            if unrecovered > 0 {
+                return Err(format!(
+                    "strict scene-escalation exhausted: {unrecovered} scene(s) remained below quality floor after escalation to the strongest backend"
+                ));
+            }
         }
         Ok(())
     }
 
-    fn build_scene_retry_translator(&self) -> Result<Translator, String> {
+    /// Build a one-off Translator at a specific escalation rung (model + beam).
+    /// Used by the per-segment ladder to retry a failing scene at a stronger
+    /// backend without disturbing the document-level translator.
+    fn build_escalation_translator(
+        &self,
+        step: &escalation::MtBackendStep,
+    ) -> Result<Translator, String> {
         let profile = self.config.quality_profile;
         let base_batch = self
             .config
@@ -1082,15 +1213,28 @@ impl SubtitlePipeline {
             force_phrase_table: self.config.force_phrase_table,
             gpu: self.config.gpu,
             require_gpu: false,
-            mt_model: self.config.mt_model.clone(),
+            // Walk the ladder's model (guardrail #6 — model comes from the step).
+            mt_model: Some(step.model_name.clone()),
             mt_batch_size: Some((base_batch / 2).max(4)),
             mt_max_batch_tokens: Some((base_tokens / 2).max(1024)),
             mt_oom_retries: Some((base_oom + 1).min(8)),
             mt_allow_cpu_fallback: true,
             mt_force_cpu: self.config.mt_force_cpu,
-            mt_daemon: self.config.mt_daemon,
-            mt_enforce_quality_floor: self.config.mt_enforce_quality_floor,
-            quality_profile: QualityProfile::Strict,
+            // P0.2 amortization: escalated scenes route through the persistent
+            // MT daemon whenever its script resolves — one Python process and
+            // one model load per rung for the whole session, instead of a
+            // fresh interpreter + multi-GB model load per failing scene
+            // (mt_daemon.py caches loaded models by config signature). When
+            // the daemon script is absent (or VOIDEX_MT_SCRIPT overrides the
+            // transport), inherit the document-level setting so the Translator
+            // never silently degrades to the phrase table.
+            mt_daemon: self.config.mt_daemon || mt_daemon_script_available(),
+            // The ladder owns the floor decision; the per-segment translator must
+            // return its best effort so the scorer (not an early Err) judges it.
+            mt_enforce_quality_floor: false,
+            // Guardrail #1: apply the rung's beam bump (e.g. Strict 600M→1.3B+beam).
+            mt_beam_size: Some(step.beam_size),
+            quality_profile: self.config.quality_profile,
         })
         .map_err(|error| error.to_string())
     }
@@ -1205,7 +1349,7 @@ impl SubtitlePipeline {
                 let rhs = a.floor - a.score;
                 lhs.total_cmp(&rhs)
             });
-            let conf_retry_limit = std::env::var("SUB_ZERO_LOW_CONF_RETRY_LIMIT")
+            let conf_retry_limit = std::env::var("VOIDEX_LOW_CONF_RETRY_LIMIT")
                 .ok()
                 .and_then(|raw| raw.parse::<usize>().ok())
                 .unwrap_or(8)
@@ -1292,7 +1436,7 @@ impl SubtitlePipeline {
             lhs.total_cmp(&rhs)
         });
 
-        let retry_limit = std::env::var("SUB_ZERO_SOURCE_SCENE_RETRY_LIMIT")
+        let retry_limit = std::env::var("VOIDEX_SOURCE_SCENE_RETRY_LIMIT")
             .ok()
             .and_then(|raw| raw.parse::<usize>().ok())
             .unwrap_or(4)
@@ -1576,6 +1720,105 @@ re-run with --transcribe + a local whisper.cpp model to generate real subtitles 
         }
 
         Ok((srt_path, Some(wav_path)))
+    }
+}
+
+/// Production wiring of the escalation backend seam: builds a real NLLB
+/// Translator for the requested rung and translates the segment. Tests inject a
+/// scripted fake instead (see `escalation::tests`), so the ladder orchestration
+/// is exercised without NLLB / GPU / models.
+///
+/// P0.2 amortization: the Translator for each rung is built once and reused for
+/// every failing scene routed to that rung. Combined with daemon routing in
+/// `build_escalation_translator`, the rung's model loads once per session
+/// instead of once per scene.
+struct NeuralSegmentBackend<'a> {
+    pipeline: &'a SubtitlePipeline,
+    /// One cached NLLB Translator per rung label (e.g. "nllb-1.3B").
+    translators: std::cell::RefCell<std::collections::HashMap<&'static str, Translator>>,
+    /// The LLM rung's sidecar, built lazily on first use and kept alive (one
+    /// llama-server load per session, not per scene).
+    llm: std::cell::RefCell<Option<crate::engine::llm_mt::LlmTranslator>>,
+}
+
+impl<'a> NeuralSegmentBackend<'a> {
+    fn new(pipeline: &'a SubtitlePipeline) -> Self {
+        Self {
+            pipeline,
+            translators: std::cell::RefCell::new(std::collections::HashMap::new()),
+            llm: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// NLLB rung: one cached Translator per rung label, reused across scenes
+    /// (P0.2 amortization).
+    fn translate_nllb(
+        &self,
+        step: &escalation::MtBackendStep,
+        source: &[SubtitleCue],
+    ) -> Result<Vec<SubtitleCue>, String> {
+        use std::collections::hash_map::Entry;
+        let mut cache = self.translators.borrow_mut();
+        let translator = match cache.entry(step.label) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            // A failed build inserts nothing, so a later scene retries cleanly
+            // rather than hitting a poisoned cache slot.
+            Entry::Vacant(slot) => slot.insert(self.pipeline.build_escalation_translator(step)?),
+        };
+        translator
+            .translate_all(source)
+            .map_err(|error| error.to_string())
+    }
+
+    /// LLM rung: lazily spawn the llama-server sidecar once, then reuse it for
+    /// every escalated scene this session.
+    fn translate_llm(&self, source: &[SubtitleCue]) -> Result<Vec<SubtitleCue>, String> {
+        let mut slot = self.llm.borrow_mut();
+        if slot.is_none() {
+            let (binary, model) = crate::engine::llm_mt::resolve_llm_paths()
+                .ok_or_else(|| "llm backend unavailable (binary/model not found)".to_string())?;
+            // Feed the persisted character glossary into the prompt: rescued
+            // translations stay consistent with names the document — and earlier
+            // episodes — already settled on (cross-run self-improvement).
+            let glossary = crate::engine::character_glossary::CharacterGlossary::load_default()
+                .canonical_names();
+            *slot = Some(crate::engine::llm_mt::LlmTranslator::new(
+                binary,
+                model,
+                &self.pipeline.config.source_lang,
+                &self.pipeline.config.target_lang,
+                glossary,
+            )?);
+        }
+        slot.as_ref()
+            .expect("llm slot populated above")
+            .translate_all(source)
+    }
+}
+
+impl escalation::SegmentBackend for NeuralSegmentBackend<'_> {
+    fn translate_segment(
+        &self,
+        step: &escalation::MtBackendStep,
+        source: &[SubtitleCue],
+    ) -> Result<Vec<SubtitleCue>, String> {
+        match step.kind {
+            escalation::BackendKind::Nllb => self.translate_nllb(step, source),
+            escalation::BackendKind::Llm => self.translate_llm(source),
+        }
+    }
+}
+
+/// Production scene scorer: reuses the established scene-quality score and
+/// semantic penalty so the ladder's acceptance test matches the rest of the
+/// pipeline's quality model (no divergent heuristic).
+struct RealSceneScorer;
+
+impl escalation::SceneScorer for RealSceneScorer {
+    fn score(&self, translated: &[SubtitleCue]) -> (f64, f64) {
+        let (_difficulty, score) = scene_quality_for_slice(translated);
+        let health = assess_translation_semantics(translated, "en");
+        (score, scene_semantic_penalty(&health))
     }
 }
 

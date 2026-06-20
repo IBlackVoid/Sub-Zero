@@ -62,8 +62,20 @@ impl CharacterGlossary {
             }
         }
 
-        for (word, count) in freq.iter() {
-            if *count < MIN_CONSISTENT_OCCURRENCES {
+        // Process candidates in a deterministic, frequency-ranked order.
+        //
+        // `HashMap` iteration order is randomized per run, so iterating `freq`
+        // directly made the cluster canonical non-deterministic AND let a
+        // garbled spelling that happened to be visited first become the
+        // canonical that every other variant — including the correct one — was
+        // rewritten to. Ranking by descending frequency (then lexicographically
+        // for stable tie-breaks) makes the most-attested spelling the canonical,
+        // which is both reproducible and the better correctness prior.
+        let mut ranked: Vec<(&String, usize)> = freq.iter().map(|(w, c)| (w, *c)).collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+
+        for (word, count) in ranked {
+            if count < MIN_CONSISTENT_OCCURRENCES {
                 continue;
             }
             if self.seen_variants.contains_key(word) {
@@ -88,6 +100,16 @@ impl CharacterGlossary {
         }
     }
 
+    /// Canonical names learned so far (one per cluster), sorted for determinism.
+    /// Fed to the LLM escalation rung so its rescued translations stay consistent
+    /// with names the rest of the document already settled on — and, because the
+    /// glossary persists across runs, with names learned in earlier episodes.
+    pub fn canonical_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.seen_variants.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     pub fn save(&self) -> std::io::Result<()> {
         let Some(p) = Self::path() else {
             return Ok(());
@@ -103,13 +125,13 @@ impl CharacterGlossary {
     }
 
     fn path() -> Option<PathBuf> {
-        if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
+        if let Some(home) = std::env::var_os("VOIDEX_HOME") {
             return Some(PathBuf::from(home).join("character_glossary.json"));
         }
         let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
         Some(
             PathBuf::from(home)
-                .join(".sub-zero")
+                .join(".voidex")
                 .join("character_glossary.json"),
         )
     }
@@ -231,9 +253,32 @@ mod tests {
     }
 
     #[test]
+    fn learn_canonical_is_most_frequent_variant() {
+        // The correct spelling "Konatsu" (4x) and a garble "Konatsv" (3x) are
+        // within Levenshtein-1 and both clear the occurrence threshold. The
+        // more frequent spelling must win as canonical, deterministically —
+        // regardless of HashMap iteration order. Run several times to make a
+        // non-deterministic regression statistically loud.
+        for _ in 0..16 {
+            let mut g = CharacterGlossary::default();
+            g.learn(&[
+                cue("Konatsu walked in."),
+                cue("Konatsu smiled."),
+                cue("Konatsu agreed."),
+                cue("Konatsu left."),
+                cue("Konatsv replied."),
+                cue("Then Konatsv whispered."),
+                cue("Konatsv was right."),
+            ]);
+            assert_eq!(g.variants.get("Konatsu"), Some(&"Konatsu".to_string()));
+            assert_eq!(g.variants.get("Konatsv"), Some(&"Konatsu".to_string()));
+        }
+    }
+
+    #[test]
     fn save_load_round_trip() {
         let tmp = std::env::temp_dir().join(format!(
-            "sub_zero_glossary_test_{}.json",
+            "voidex_glossary_test_{}.json",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())

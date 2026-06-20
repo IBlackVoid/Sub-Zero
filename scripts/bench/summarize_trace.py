@@ -27,7 +27,7 @@ def fmt_secs(value: float) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Summarize Sub-Zero runtime trace sidecars (*.sub-zero.trace.json)."
+        description="Summarize VoiDex runtime trace sidecars (*.voidex.trace.json)."
     )
     parser.add_argument("traces", nargs="+", help="Trace json files")
     args = parser.parse_args()

@@ -24,7 +24,7 @@ def _norm_path(p: str) -> str:
 
 def find_metadata_sidecars(search_dir: Path) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
-    for path in search_dir.rglob("*.sub-zero.json"):
+    for path in search_dir.rglob("*.voidex.json"):
         try:
             payload = load_json(path)
         except Exception:
@@ -215,7 +215,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument(
         "--search-dir",
         default=".",
-        help="directory to scan for *.sub-zero.json metadata sidecars (default: .)",
+        help="directory to scan for *.voidex.json metadata sidecars (default: .)",
     )
     ap.add_argument(
         "--out",
@@ -267,7 +267,7 @@ def main(argv: list[str]) -> int:
     meta_by_output = find_metadata_sidecars(search_dir)
     if not meta_by_output:
         print(
-            f"error: no metadata sidecars found under {search_dir} (expected *.sub-zero.json)",
+            f"error: no metadata sidecars found under {search_dir} (expected *.voidex.json)",
             file=sys.stderr,
         )
         return 2

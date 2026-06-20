@@ -65,7 +65,7 @@ fn temp_case_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after UNIX_EPOCH")
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("sub_zero_doom_qlock_{name}_{stamp}"));
+    let path = std::env::temp_dir().join(format!("voidex_doom_qlock_{name}_{stamp}"));
     fs::create_dir_all(&path).expect("temp directory should be creatable");
     path
 }

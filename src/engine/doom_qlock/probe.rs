@@ -327,12 +327,12 @@ fn probe_metal_gpu() -> Option<GpuProbe> {
 }
 
 fn probe_disk_write_mbps() -> Option<f64> {
-    let root = std::env::var_os("SUB_ZERO_HOME")
+    let root = std::env::var_os("VOIDEX_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
         .unwrap_or_else(std::env::temp_dir);
-    let probe_dir = root.join(".sub-zero");
+    let probe_dir = root.join(".voidex");
     if fs::create_dir_all(&probe_dir).is_err() {
         return None;
     }

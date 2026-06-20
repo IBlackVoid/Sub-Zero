@@ -158,7 +158,7 @@ pub(super) fn evaluate(
 ) -> Option<LearnedGateOutcome> {
     let (model_path, model) = model_ref()?;
 
-    let enforce = env_truthy("SUB_ZERO_LEARNED_GATE_ENFORCE");
+    let enforce = env_truthy("VOIDEX_LEARNED_GATE_ENFORCE");
     let threshold = if model.threshold.is_finite() {
         model.threshold
     } else {
@@ -235,7 +235,7 @@ fn model_ref() -> Option<&'static (PathBuf, LearnedGateModel)> {
 }
 
 fn load_model() -> Option<(PathBuf, LearnedGateModel)> {
-    let Ok(path) = std::env::var("SUB_ZERO_LEARNED_GATE_MODEL") else {
+    let Ok(path) = std::env::var("VOIDEX_LEARNED_GATE_MODEL") else {
         return None;
     };
     let path = PathBuf::from(path);

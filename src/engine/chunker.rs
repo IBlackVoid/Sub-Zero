@@ -178,7 +178,7 @@ pub struct SilenceGap {
 /// Greedy boundary selection: walk through the audio at `target_step` intervals
 /// and snap each boundary to the nearest silence-gap centroid.
 ///
-/// `pub` for `cargo bench` reach via `sub_zero::bench_internals`. Not a
+/// `pub` for `cargo bench` reach via `voidex::bench_internals`. Not a
 /// stability surface — see lib.rs for the public-API contract.
 #[doc(hidden)]
 pub fn pick_boundaries(duration: f64, gaps: &[SilenceGap], target_step: f64) -> Vec<f64> {
@@ -281,7 +281,7 @@ mod tests {
             target_chunk_secs: 300.0,
             ..Default::default()
         };
-        let tmp = std::env::temp_dir().join("sub_zero_chunker_test_stub.wav");
+        let tmp = std::env::temp_dir().join("voidex_chunker_test_stub.wav");
         // We only test the early-return path; no actual file needed.
         let chunks = chunk_audio(&tmp, &std::env::temp_dir(), 240.0, &cfg).unwrap();
         assert_eq!(chunks.len(), 1);

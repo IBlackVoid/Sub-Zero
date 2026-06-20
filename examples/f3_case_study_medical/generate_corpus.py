@@ -5,7 +5,7 @@ second-domain case study.
 The point: demonstrate that the F.3 leakage diagnostic catches a
 canonical "time-traveling feature" bug in a completely different domain
 from subtitle QE — without being tuned to the subtitle setting. The
-diagnostic was designed for Sub-Zero's reference-feature problem and
+diagnostic was designed for VoiDex's reference-feature problem and
 makes no medical-domain assumptions; if it generalises, it should flag
 the leakers here too.
 
@@ -47,7 +47,7 @@ plus a sharper response near the survival decision boundary —
 they encode what actually happened.
 
 The corpus is deliberately sized (n=500, balanced ~50/50) to be larger
-than the Sub-Zero corpus (n=175) so reviewers can verify that the
+than the VoiDex corpus (n=175) so reviewers can verify that the
 diagnostic's behaviour is consistent at different sample sizes.
 
 Output: `corpus.jsonl` with one JSON per line in the same schema the

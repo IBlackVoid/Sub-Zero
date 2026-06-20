@@ -31,13 +31,13 @@ pub struct SpeakerSignature {
 }
 
 pub fn priors_path() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
+    if let Some(home) = std::env::var_os("VOIDEX_HOME") {
         return Some(PathBuf::from(home).join("voice_priors.json"));
     }
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
     Some(
         PathBuf::from(home)
-            .join(".sub-zero")
+            .join(".voidex")
             .join("voice_priors.json"),
     )
 }

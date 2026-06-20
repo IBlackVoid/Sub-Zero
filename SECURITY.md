@@ -1,13 +1,13 @@
 # Security Policy
 
-Sub-Zero is offline-first software that handles user media, subtitles, local
+VoiDex is offline-first software that handles user media, subtitles, local
 models, subprocesses, filesystem paths, event sidecars, and encrypted TUI
 assets. Security reports are treated seriously because a failure can expose
 private files or break the no-cloud privacy contract.
 
 ## Supported Versions
 
-Sub-Zero is pre-1.0. Until a stable release policy exists, security support
+VoiDex is pre-1.0. Until a stable release policy exists, security support
 covers:
 
 | Version | Supported |
@@ -41,8 +41,8 @@ keep the reporter updated.
 
 ## In Scope
 
-Reports are in scope when they affect Sub-Zero behavior or amplify risk through
-Sub-Zero integration:
+Reports are in scope when they affect VoiDex behavior or amplify risk through
+VoiDex integration:
 
 - Code execution or command injection through media, subtitle, config, model,
   script, or path input.
@@ -62,7 +62,7 @@ Open a normal issue instead for:
 - Translation quality regressions without a security impact.
 - Crashes on malformed input that fail closed and do not corrupt files or leak
   data.
-- Third-party model behavior without a Sub-Zero-specific amplification.
+- Third-party model behavior without a VoiDex-specific amplification.
 - Issues that require the attacker to already have unrestricted local code
   execution on the victim machine.
 - Social engineering, phishing, or attacks against unrelated infrastructure.

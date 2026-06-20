@@ -124,12 +124,12 @@ def main(argv: list[str]) -> int:
     ap.add_argument(
         "--source-lang",
         default="ja",
-        help="source language code for Sub-Zero (default: ja)",
+        help="source language code for VoiDex (default: ja)",
     )
     ap.add_argument(
         "--target-lang",
         default="en",
-        help="target language code for Sub-Zero (default: en)",
+        help="target language code for VoiDex (default: en)",
     )
     ap.add_argument(
         "--reference-lang",

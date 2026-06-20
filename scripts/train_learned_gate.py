@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-train the Sub-Zero learned quality gate.
+"""Re-train the VoiDex learned quality gate.
 
 This harness emits either:
 

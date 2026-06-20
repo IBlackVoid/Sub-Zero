@@ -1,7 +1,7 @@
 name: release
 
 # Triggered by pushing a semver tag (e.g. `v0.1.0`). The workflow:
-#   1. Cross-builds the `sub-zero` and `sub-zero-tui` binaries for four
+#   1. Cross-builds the `voidex` and `voidex-tui` binaries for four
 #      first-class targets.
 #   2. Strips the binaries, archives them, and emits SHA-256 checksums.
 #   3. Uploads each archive + its checksum as a workflow artifact.
@@ -75,10 +75,10 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          stage="sub-zero-${version}-${{ matrix.target }}"
+          stage="voidex-${version}-${{ matrix.target }}"
           mkdir -p "dist/${stage}"
-          cp "target/${{ matrix.target }}/release/sub-zero${{ matrix.bin-ext }}" "dist/${stage}/"
-          cp "target/${{ matrix.target }}/release/sub-zero-tui${{ matrix.bin-ext }}" "dist/${stage}/"
+          cp "target/${{ matrix.target }}/release/voidex${{ matrix.bin-ext }}" "dist/${stage}/"
+          cp "target/${{ matrix.target }}/release/voidex-tui${{ matrix.bin-ext }}" "dist/${stage}/"
           cp README.md LICENSE "dist/${stage}/"
           echo "STAGE=${stage}" >> "$GITHUB_ENV"
           echo "VERSION=${version}" >> "$GITHUB_ENV"

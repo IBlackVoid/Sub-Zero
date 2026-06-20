@@ -24,11 +24,11 @@ impl Default for Prefs {
 
 impl Prefs {
     pub fn path() -> Option<PathBuf> {
-        if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
+        if let Some(home) = std::env::var_os("VOIDEX_HOME") {
             return Some(PathBuf::from(home).join("tui.json"));
         }
         let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
-        Some(PathBuf::from(home).join(".sub-zero").join("tui.json"))
+        Some(PathBuf::from(home).join(".voidex").join("tui.json"))
     }
 
     pub fn load() -> Self {
@@ -69,7 +69,7 @@ pub fn local_hour_24() -> u32 {
 }
 
 fn tz_offset_seconds() -> i64 {
-    if let Ok(s) = std::env::var("SUB_ZERO_TZ_OFFSET_HOURS") {
+    if let Ok(s) = std::env::var("VOIDEX_TZ_OFFSET_HOURS") {
         if let Ok(h) = s.trim().parse::<i64>() {
             return h * 3600;
         }

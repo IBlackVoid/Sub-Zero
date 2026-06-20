@@ -167,7 +167,7 @@ impl Transcriber {
         let py_model_dir = discover_default_py_whisper_model_dir(&py_model_name);
         if py_model_dir.is_none() {
             return Err(format!(
-                "python whisper model not found for {py_model_name}. Put it at ./models/whisper/{py_model_name}.pt or set SUB_ZERO_PYWHISPER_MODEL_DIR."
+                "python whisper model not found for {py_model_name}. Put it at ./models/whisper/{py_model_name}.pt or set VOIDEX_PYWHISPER_MODEL_DIR."
             ));
         }
 
@@ -350,7 +350,19 @@ fn resolve_whisper_cpp_bin(explicit: &Option<PathBuf>) -> Option<PathBuf> {
         return None;
     }
 
-    // Common whisper.cpp executable names.
+    // ── Project-local first ─────────────────────────────────────────────
+    // A whisper-cli shipped alongside the GGML models in ./models/ always
+    // wins over anything on PATH. This prevents broken WindowsApps stubs
+    // and other shadowed executables from being picked up instead.
+    let local_names = ["whisper-cli.exe", "whisper-cli", "whisper.exe", "whisper"];
+    for name in &local_names {
+        let path = PathBuf::from("models").join(name);
+        if path.is_file() && !is_python_script(&path) {
+            return Some(path);
+        }
+    }
+
+    // ── System PATH fallback ────────────────────────────────────────────
     // Prefer the unambiguous "whisper-cli" first; bare "whisper" is checked
     // last because it collides with the Python `openai-whisper` CLI wrapper.
     let candidates = [
@@ -370,6 +382,13 @@ fn resolve_whisper_cpp_bin(explicit: &Option<PathBuf>) -> Option<PathBuf> {
     // two bytes is enough — ELF starts with 0x7F 'E', PE with 'MZ', and
     // Python scripts with '#!'.
     if is_python_script(&path) {
+        return None;
+    }
+
+    // Guard: reject zero-output stubs (e.g. Windows execution aliases).
+    // A healthy whisper-cli writes *something* to stdout or stderr with
+    // --help; a stub returns immediately with empty streams.
+    if is_silent_stub(&path) {
         return None;
     }
 
@@ -394,23 +413,33 @@ fn is_python_script(path: &Path) -> bool {
     header == [b'#', b'!']
 }
 
+/// Returns `true` when the executable produces zero output for `--help`.
+/// This catches Windows "execution alias" stubs in WindowsApps that are
+/// technically PE files but do nothing useful (0-byte stdout + stderr).
+fn is_silent_stub(path: &Path) -> bool {
+    let Ok(output) = std::process::Command::new(path)
+        .arg("--help")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    else {
+        return true; // can't even run → treat as broken
+    };
+    output.stdout.is_empty() && output.stderr.is_empty()
+}
+
 fn discover_default_whisper_cpp_model_path_for_profile(profile: QualityProfile) -> Option<PathBuf> {
     // Explicit env var wins.
-    if let Some(path) = std::env::var_os("SUB_ZERO_WHISPER_MODEL") {
+    if let Some(path) = std::env::var_os("VOIDEX_WHISPER_MODEL") {
         let path = PathBuf::from(path);
         if path.is_file() {
             return Some(path);
         }
     }
 
-    let candidates: &[&str] = match profile {
+    // Model filenames in profile preference order (best quality-for-profile first).
+    let filenames: &[&str] = match profile {
         QualityProfile::Strict => &[
-            "models/ggml-large-v3.bin",
-            "models/ggml-large-v2.bin",
-            "models/ggml-large.bin",
-            "models/ggml-medium.bin",
-            "models/ggml-small.bin",
-            "models/ggml-base.bin",
             "ggml-large-v3.bin",
             "ggml-large-v2.bin",
             "ggml-large.bin",
@@ -419,12 +448,6 @@ fn discover_default_whisper_cpp_model_path_for_profile(profile: QualityProfile) 
             "ggml-base.bin",
         ],
         QualityProfile::Balanced => &[
-            "models/ggml-medium.bin",
-            "models/ggml-small.bin",
-            "models/ggml-base.bin",
-            "models/ggml-large-v3.bin",
-            "models/ggml-large-v2.bin",
-            "models/ggml-large.bin",
             "ggml-medium.bin",
             "ggml-small.bin",
             "ggml-base.bin",
@@ -433,12 +456,6 @@ fn discover_default_whisper_cpp_model_path_for_profile(profile: QualityProfile) 
             "ggml-large.bin",
         ],
         QualityProfile::Fast => &[
-            "models/ggml-small.bin",
-            "models/ggml-base.bin",
-            "models/ggml-medium.bin",
-            "models/ggml-large-v3.bin",
-            "models/ggml-large-v2.bin",
-            "models/ggml-large.bin",
             "ggml-small.bin",
             "ggml-base.bin",
             "ggml-medium.bin",
@@ -447,10 +464,22 @@ fn discover_default_whisper_cpp_model_path_for_profile(profile: QualityProfile) 
             "ggml-large.bin",
         ],
     };
-    for candidate in candidates {
-        let path = PathBuf::from(candidate);
-        if path.is_file() {
-            return Some(path);
+
+    // Directories to search, in order. An explicit override reroots discovery
+    // to exactly that directory (mirrors VOIDEX_PYWHISPER_MODEL_DIR), which
+    // lets callers point at a model dir outside the working tree and lets
+    // tests exercise discovery deterministically regardless of ./models/.
+    let roots: Vec<PathBuf> = match std::env::var_os("VOIDEX_WHISPER_CPP_MODEL_DIR") {
+        Some(dir) => vec![PathBuf::from(dir)],
+        None => vec![PathBuf::from("models"), PathBuf::new()],
+    };
+
+    for root in &roots {
+        for filename in filenames {
+            let path = root.join(filename);
+            if path.is_file() {
+                return Some(path);
+            }
         }
     }
 
@@ -461,7 +490,7 @@ fn python_whisper_available() -> Result<Option<String>, String> {
     let mut candidates = Vec::<String>::new();
 
     // Optional override to force a specific Python interpreter.
-    if let Ok(explicit) = std::env::var("SUB_ZERO_PYTHON_BIN") {
+    if let Ok(explicit) = std::env::var("VOIDEX_PYTHON_BIN") {
         let explicit = explicit.trim();
         if !explicit.is_empty() {
             candidates.push(explicit.to_string());
@@ -532,7 +561,7 @@ fn python_whisper_available() -> Result<Option<String>, String> {
 }
 
 fn discover_default_py_whisper_model_name(profile: QualityProfile) -> String {
-    if let Ok(name) = std::env::var("SUB_ZERO_PYWHISPER_MODEL") {
+    if let Ok(name) = std::env::var("VOIDEX_PYWHISPER_MODEL") {
         if !name.trim().is_empty() {
             return name.trim().to_string();
         }
@@ -554,7 +583,7 @@ fn discover_default_py_whisper_model_name(profile: QualityProfile) -> String {
 }
 
 fn discover_default_py_whisper_model_dir(model_name: &str) -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("SUB_ZERO_PYWHISPER_MODEL_DIR") {
+    if let Ok(dir) = std::env::var("VOIDEX_PYWHISPER_MODEL_DIR") {
         let dir = PathBuf::from(dir);
         if dir.join(format!("{model_name}.pt")).is_file() {
             return Some(dir);
@@ -591,7 +620,7 @@ fn create_temp_dir(video: &Path) -> Result<PathBuf, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("sub_zero_transcribe_{stem}_{stamp}"));
+    let path = std::env::temp_dir().join(format!("voidex_transcribe_{stem}_{stamp}"));
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     Ok(path)
 }
@@ -1397,10 +1426,17 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time should be monotonic")
             .as_nanos();
-        let fake_bin = std::env::temp_dir().join(format!("sub_zero_fake_whisper_bin_{stamp}"));
+        let fake_bin = std::env::temp_dir().join(format!("voidex_fake_whisper_bin_{stamp}"));
         fs::write(&fake_bin, "").expect("temp file should be writable");
 
-        let error = Transcriber::new(TranscribeConfig {
+        // Make discovery hermetic: point the whisper.cpp model search at an
+        // empty temp dir so it finds nothing regardless of the repo's
+        // ./models/ contents, forcing the "missing model" error path.
+        let empty_model_dir = std::env::temp_dir().join(format!("voidex_empty_model_dir_{stamp}"));
+        fs::create_dir_all(&empty_model_dir).expect("temp dir should be creatable");
+        std::env::set_var("VOIDEX_WHISPER_CPP_MODEL_DIR", &empty_model_dir);
+
+        let result = Transcriber::new(TranscribeConfig {
             enabled: true,
             whisper_bin: Some(fake_bin),
             whisper_model: None,
@@ -1416,8 +1452,14 @@ mod tests {
             gpu: false,
             require_gpu: false,
             quality_profile: super::QualityProfile::Balanced,
-        })
-        .expect_err("should fail without model");
+        });
+
+        // Clean up the override before asserting so a panic can't leak it into
+        // other tests sharing this process.
+        std::env::remove_var("VOIDEX_WHISPER_CPP_MODEL_DIR");
+        let _ = fs::remove_dir_all(&empty_model_dir);
+
+        let error = result.expect_err("should fail without model");
         assert!(error.to_string().contains("missing --whisper-model"));
     }
 

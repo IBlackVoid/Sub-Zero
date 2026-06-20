@@ -280,7 +280,7 @@ fn translate_batch_inner(
     let stderr = String::from_utf8_lossy(&output.stderr);
     for line in stderr.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("sub-zero:") {
+        if trimmed.starts_with("voidex:") {
             eprintln!("{trimmed}");
         }
     }

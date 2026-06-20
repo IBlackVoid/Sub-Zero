@@ -1,4 +1,4 @@
-//! sub-zero-tui — entry point.
+//! voidex-tui — entry point.
 
 mod accessibility;
 mod animation;
@@ -20,10 +20,14 @@ mod waveform;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // Rebrand carry-over: move any legacy `~/.sub-zero` state to `~/.voidex`
+    // before prefs/recents/secrets are read. Best-effort and idempotent.
+    paths::migrate_legacy_home();
+
     match app::run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("sub-zero-tui: {err}");
+            eprintln!("voidex-tui: {err}");
             ExitCode::FAILURE
         }
     }

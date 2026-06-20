@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """High-fidelity GIF/video → braille JSONL converter.
 
-Produces the cells JSONL the Sub-Zero TUI consumes, but using real
+Produces the cells JSONL the VoiDex TUI consumes, but using real
 Unicode braille (U+2800..U+28FF) for 2×4 subpixel resolution per cell.
 A single 80×40 grid resolves 160×160 effective pixels — matching the
 high-density "Drippy Coo" reference style.
 
 Usage:
   python scripts/tui/braille_convert.py input.gif --width 80 --out idle.jsonl
-  python scripts/tui/braille_convert.py input.gif --width 100 --palette sub-zero
+  python scripts/tui/braille_convert.py input.gif --width 100 --palette voidex
   python scripts/tui/braille_convert.py inputs/*.gif --batch state_mapping.json
 
 Wire format matches Pixel-Ripper's --output-format cells:
@@ -37,9 +37,9 @@ from PIL import Image, ImageSequence
 
 
 # ---------------------------------------------------------------------------
-# Palette: SUB_ZERO matching the HTML mockup AC table.
+# Palette: VOIDEX matching the HTML mockup AC table.
 # ---------------------------------------------------------------------------
-SUB_ZERO_PALETTE: list[tuple[int, int, int]] = [
+VOIDEX_PALETTE: list[tuple[int, int, int]] = [
     (0xf0, 0xc0, 0x20),  # Y - bow yellow
     (0xc8, 0xa0, 0x10),  # y - bow shadow
     (0x7a, 0x30, 0x10),  # H - hair dark
@@ -212,7 +212,7 @@ def frame_to_braille_cells(
                 block = arr[cy * 4:(cy + 1) * 4, cx * 2:(cx + 1) * 2]
                 avg = tuple(block.reshape(-1, 3).mean(axis=0))
             if use_palette:
-                r, g, b = quantize_to_palette(avg, SUB_ZERO_PALETTE)
+                r, g, b = quantize_to_palette(avg, VOIDEX_PALETTE)
             else:
                 r, g, b = int(round(avg[0])), int(round(avg[1])), int(round(avg[2]))
             row.append((ch, r, g, b))
@@ -542,8 +542,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--height", type=int, help="Cell height (default: aspect-derived)")
     p.add_argument("--threshold", type=int, default=50,
                    help="Brightness percentile that turns a subpixel on (default: 50)")
-    p.add_argument("--palette", choices=["sub-zero", "source"], default="source",
-                   help="Quantize colours to SUB_ZERO palette or keep source colours")
+    p.add_argument("--palette", choices=["voidex", "source"], default="source",
+                   help="Quantize colours to VOIDEX palette or keep source colours")
     p.add_argument("--batch", help="Path to a state_mapping.json — converts every state")
     p.add_argument("--out-dir", default="assets/ascii", help="Batch output directory")
     # Video-only knobs.
@@ -561,7 +561,7 @@ def main(argv: list[str]) -> int:
                    help="tone curve (default: 0.85 for video, 1.0 for images/gif)")
     args = p.parse_args(argv)
 
-    use_palette = (args.palette == "sub-zero")
+    use_palette = (args.palette == "voidex")
 
     if args.batch:
         total = batch(

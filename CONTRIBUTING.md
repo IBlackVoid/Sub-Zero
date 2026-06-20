@@ -1,6 +1,6 @@
-# Contributing to Sub-Zero
+# Contributing to VoiDex
 
-thanks for being here. Sub-Zero is an offline subtitle engine that takes
+thanks for being here. VoiDex is an offline subtitle engine that takes
 privacy and correctness seriously — it processes real media on real hardware
 and makes provable claims about quality. contributions are welcome.
 
@@ -8,8 +8,8 @@ and makes provable claims about quality. contributions are welcome.
 
 ```bash
 # clone and build
-git clone https://github.com/IBlackVoid/Sub-Zero
-cd Sub-Zero
+git clone https://github.com/IBlackVoid/VoiDex
+cd VoiDex
 cargo build --workspace
 
 # run the gates (must pass before any PR)
@@ -74,8 +74,8 @@ your PR description should answer:
 ## testing
 
 ```bash
-cargo test -p sub-zero         # just the engine
-cargo test -p sub-zero-tui     # just the dashboard
+cargo test -p voidex         # just the engine
+cargo test -p voidex-tui     # just the dashboard
 cargo test --workspace         # everything
 ```
 

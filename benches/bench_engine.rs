@@ -8,7 +8,7 @@
 //! Run: `cargo bench` — output lands under `target/criterion/`.
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
-use sub_zero::bench_internals::{
+use voidex::bench_internals::{
     deduplicate_overlaps, parse_srt, parse_srt_cached, pick_boundaries, MemoryContentCache,
     SilenceGap, TimedCue,
 };

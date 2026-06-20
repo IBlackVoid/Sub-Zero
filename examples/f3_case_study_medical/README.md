@@ -6,7 +6,7 @@ validation of the **F.3 leakage diagnostic** (theory at
 `scripts/audit_learned_gate_features.py`).
 
 > **Why it exists.** The F.3 diagnostic was developed to catch a
-> specific failure mode in Sub-Zero's subtitle quality gate
+> specific failure mode in VoiDex's subtitle quality gate
 > (reference-derived features that don't exist at inference). The
 > theory-lab review of 2026-05-23 argued that the diagnostic
 > generalises beyond subtitles and recommended a second-domain case

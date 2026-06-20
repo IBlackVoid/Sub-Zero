@@ -10,7 +10,7 @@
 //!   that, when present (regardless of its value), prevents the addition
 //!   of ANSI color."
 //!
-//! - `SUB_ZERO_TUI_REDUCED_MOTION` (any non-empty value) — pin the
+//! - `VOIDEX_TUI_REDUCED_MOTION` (any non-empty value) — pin the
 //!   animation to its last frame instead of advancing through it.
 //!   Vestibular accessibility and slow-SSH friendliness. The easter egg
 //!   still triggers; it just lands on its final pose instead of playing
@@ -31,7 +31,7 @@ impl Accessibility {
     pub fn from_env() -> Self {
         Self {
             no_color: env_flag("NO_COLOR"),
-            reduced_motion: env_flag("SUB_ZERO_TUI_REDUCED_MOTION"),
+            reduced_motion: env_flag("VOIDEX_TUI_REDUCED_MOTION"),
         }
     }
 }
@@ -53,7 +53,7 @@ mod tests {
         // shell, this test would be noisy. Skip with a message in that
         // case rather than fail.
         let env_no_color = std::env::var_os("NO_COLOR").is_some();
-        let env_motion = std::env::var_os("SUB_ZERO_TUI_REDUCED_MOTION").is_some();
+        let env_motion = std::env::var_os("VOIDEX_TUI_REDUCED_MOTION").is_some();
         if env_no_color || env_motion {
             eprintln!("skipping defaults_are_off: a11y env vars set on host");
             return;

@@ -189,10 +189,7 @@ impl DoomQlock {
         );
         eprintln!(
             "ibvoid-doom-qlock: lfas arm={} coverage_floor={:.3} regret={:.1} best_delta_i={:.3}",
-            lfas_arm.0,
-            lfas_floor,
-            lfas_summary.estimated_regret,
-            lfas_summary.best_mean_delta_i,
+            lfas_arm.0, lfas_floor, lfas_summary.estimated_regret, lfas_summary.best_mean_delta_i,
         );
 
         Ok(PreparedRun {
@@ -212,7 +209,9 @@ impl DoomQlock {
     /// quality profile of the prepared run determines which arm receives
     /// the feedback.
     pub fn record_f3_audit(&mut self, prepared: &PreparedRun, sample: F3Sample) {
-        let arm = lfas::ArmId(quality_profile_to_arm(prepared.effective_config.quality_profile));
+        let arm = lfas::ArmId(quality_profile_to_arm(
+            prepared.effective_config.quality_profile,
+        ));
         self.lfas.record(arm, Some(sample));
     }
 
@@ -231,9 +230,7 @@ impl DoomQlock {
     /// Returns `Some(profile)` if LFAS has enough data to make a
     /// recommendation (past the initial exploration phase). Returns
     /// `None` if LFAS is still exploring or has no observations.
-    pub fn lfas_recommended_profile(
-        &self,
-    ) -> Option<crate::engine::transcribe::QualityProfile> {
+    pub fn lfas_recommended_profile(&self) -> Option<crate::engine::transcribe::QualityProfile> {
         use crate::engine::transcribe::QualityProfile;
         let arm = self.lfas.pick_arm();
         let summary = self.lfas.summary();
@@ -252,7 +249,9 @@ impl DoomQlock {
     pub fn record_success(&mut self, prepared: &PreparedRun, output: &Path, elapsed_secs: f64) {
         // Advance the LFAS step counter (no F.3 sample — that comes via
         // `record_f3_audit` when the audit actually runs).
-        let arm = lfas::ArmId(quality_profile_to_arm(prepared.effective_config.quality_profile));
+        let arm = lfas::ArmId(quality_profile_to_arm(
+            prepared.effective_config.quality_profile,
+        ));
         self.lfas.record(arm, None);
 
         let health = assess_output_health(output).ok();

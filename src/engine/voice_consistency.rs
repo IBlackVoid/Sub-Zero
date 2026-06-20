@@ -256,13 +256,13 @@ impl VoicePriors {
     }
 
     pub fn path() -> Option<PathBuf> {
-        if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
+        if let Some(home) = std::env::var_os("VOIDEX_HOME") {
             return Some(PathBuf::from(home).join("voice_priors.json"));
         }
         let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
         Some(
             PathBuf::from(home)
-                .join(".sub-zero")
+                .join(".voidex")
                 .join("voice_priors.json"),
         )
     }
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn priors_save_load_round_trip() {
         let tmp = std::env::temp_dir().join(format!(
-            "sub_zero_voice_test_{}.json",
+            "voidex_voice_test_{}.json",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())

@@ -1,6 +1,6 @@
-//! Subprocess driver for the Sub-Zero engine.
+//! Subprocess driver for the VoiDex engine.
 //!
-//! The TUI does not embed the engine — it spawns `sub-zero.exe` with
+//! The TUI does not embed the engine — it spawns `voidex.exe` with
 //! `--events-file <path>` and tails the JSONL stream. This file owns
 //! the spawn / wait / abort logic and the event parser that feeds the
 //! Running screen.
@@ -426,7 +426,7 @@ fn events_temp_path(input: &Path) -> PathBuf {
         .and_then(|s| s.to_str())
         .unwrap_or("run")
         .to_string();
-    name.push_str(".sub-zero-tui.events.jsonl");
+    name.push_str(".voidex-tui.events.jsonl");
     std::env::temp_dir().join(name)
 }
 
@@ -480,14 +480,14 @@ fn format_event_summary(ev: &EngineEvent) -> String {
     }
 }
 
-/// Locate the Sub-Zero engine binary. Looks for it next to the TUI
+/// Locate the VoiDex engine binary. Looks for it next to the TUI
 /// executable first (the install-time invariant), then falls back to
 /// the in-repo release path so dev builds work without setup.
 pub fn locate_engine_binary() -> Option<PathBuf> {
     let exe_name = if cfg!(windows) {
-        "sub-zero.exe"
+        "voidex.exe"
     } else {
-        "sub-zero"
+        "voidex"
     };
     if let Ok(self_exe) = std::env::current_exe() {
         if let Some(dir) = self_exe.parent() {

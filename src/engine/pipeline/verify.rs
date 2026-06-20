@@ -66,7 +66,7 @@ pub(super) fn verify_srt_against_audio(
     }
 
     let mut report = String::new();
-    report.push_str("sub-zero verify report\n");
+    report.push_str("voidex verify report\n");
     report.push_str(&format!("srt: {}\n", output_srt.display()));
     report.push_str(&format!("audio: {}\n", audio_wav.display()));
     report.push_str(&format!(

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify the M/D/1 tandem latency bound (docs/F1_latency.md, Theorem 1).
 
-Reads `*.sub-zero.trace.json` sidecars produced by `--trace-runtime`.
+Reads `*.voidex.trace.json` sidecars produced by `--trace-runtime`.
 For each trace it estimates per-stage mean service time and global
 throughput, computes the Pollaczek-Khinchine M/D/1 bound, and checks
 
@@ -224,7 +224,7 @@ def aggregate(verdicts: Iterable[TraceVerdict]) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("traces", nargs="+", help="*.sub-zero.trace.json files")
+    parser.add_argument("traces", nargs="+", help="*.voidex.trace.json files")
     parser.add_argument(
         "--strict",
         action="store_true",

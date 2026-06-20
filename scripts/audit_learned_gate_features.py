@@ -7,7 +7,7 @@ estimates mutual information between each feature and the label, twice
 — and flags features whose information collapses under the mask.
 
 The mask encodes "what features will not be available at production
-inference time." In the Sub-Zero subtitle case this is "anything
+inference time." In the VoiDex subtitle case this is "anything
 derived from a reference SRT." In a medical-risk case it would be
 "anything recorded after admission." The diagnostic is domain-agnostic;
 only the mask is domain-specific.

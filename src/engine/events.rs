@@ -84,7 +84,7 @@ mod tests {
 
     fn temp_path(stem: &str) -> std::path::PathBuf {
         let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("sub_zero_{stem}_{n}.jsonl"))
+        std::env::temp_dir().join(format!("voidex_{stem}_{n}.jsonl"))
     }
 
     #[test]

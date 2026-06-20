@@ -1,6 +1,6 @@
 //! Persistent recent-files list for the Picker screen.
 //!
-//! Stored at `~/.sub-zero/tui_recents.json`. Atomic writes via temp +
+//! Stored at `~/.voidex/tui_recents.json`. Atomic writes via temp +
 //! rename so a crash mid-write never corrupts the file.
 
 use std::path::{Path, PathBuf};
@@ -71,14 +71,10 @@ impl Recents {
     }
 
     fn path() -> Option<PathBuf> {
-        if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
+        if let Some(home) = std::env::var_os("VOIDEX_HOME") {
             return Some(PathBuf::from(home).join("tui_recents.json"));
         }
         let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
-        Some(
-            PathBuf::from(home)
-                .join(".sub-zero")
-                .join("tui_recents.json"),
-        )
+        Some(PathBuf::from(home).join(".voidex").join("tui_recents.json"))
     }
 }

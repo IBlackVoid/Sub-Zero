@@ -40,8 +40,8 @@ jobs:
             '\.(mp4|mkv|webm|mov|avi|flv|wmv|m4v|ts)$'
             '\.(mp3|m4a|flac|opus|ogg|aac)$'
             '\.(safetensors|gguf|ggml|onnx|pt|pth|bin)$'
-            '\.sub-zero\.json$'
-            '\.sub-zero\.trace\.json$'
+            '\.voidex\.json$'
+            '\.voidex\.trace\.json$'
             '^SILENT HILL'
             '^Try Not To Get'
           )

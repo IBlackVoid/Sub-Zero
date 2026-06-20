@@ -4,17 +4,17 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn bin_path() -> PathBuf {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_sub-zero") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_voidex") {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_sub_zero") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_voidex") {
         return PathBuf::from(path);
     }
 
     let exe_name = if cfg!(windows) {
-        "sub-zero.exe"
+        "voidex.exe"
     } else {
-        "sub-zero"
+        "voidex"
     };
     let fallback = std::env::current_exe()
         .ok()
@@ -26,7 +26,7 @@ fn bin_path() -> PathBuf {
         }
     }
 
-    panic!("missing binary path for sub-zero");
+    panic!("missing binary path for voidex");
 }
 
 fn temp_case_dir(name: &str) -> PathBuf {
@@ -34,7 +34,7 @@ fn temp_case_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after UNIX_EPOCH")
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("sub_zero_it_{name}_{stamp}"));
+    let path = std::env::temp_dir().join(format!("voidex_it_{name}_{stamp}"));
     fs::create_dir_all(&path).expect("temp dir should be creatable");
     path
 }
@@ -134,13 +134,16 @@ fn phrase_table_cli_smoke() {
     assert!(translated.is_file(), "expected translated file to exist");
     let translated_content =
         fs::read_to_string(&translated).expect("translated SRT should be readable");
-    assert!(translated_content.contains("hello"));
-    assert!(translated_content.contains("thank you"));
+    // postprocess() capitalizes sentence starts, so the phrase-table output
+    // is "Hello" / "Thank you" (see fix_capitalization). Matches the
+    // pipeline unit test process_file_translates_and_writes.
+    assert!(translated_content.contains("Hello"));
+    assert!(translated_content.contains("Thank you"));
 }
 
 #[test]
 fn ffmpeg_ffprobe_smoke() {
-    if std::env::var("SUB_ZERO_RUN_FFMPEG_SMOKE").ok().as_deref() != Some("1") {
+    if std::env::var("VOIDEX_RUN_FFMPEG_SMOKE").ok().as_deref() != Some("1") {
         return;
     }
 
@@ -202,7 +205,7 @@ fn ffmpeg_ffprobe_smoke() {
 
 #[test]
 fn neural_mt_subtitle_quality_smoke() {
-    if std::env::var("SUB_ZERO_RUN_NEURAL_SMOKE").ok().as_deref() != Some("1") {
+    if std::env::var("VOIDEX_RUN_NEURAL_SMOKE").ok().as_deref() != Some("1") {
         return;
     }
 

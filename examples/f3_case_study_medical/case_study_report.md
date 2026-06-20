@@ -95,7 +95,7 @@ direction and at the right order of magnitude.
 The audit script and the v2 retrain harness were never modified to
 "know about medicine." The case study used exactly the same
 `scripts/audit_learned_gate_features.py` and
-`scripts/train_learned_gate.py` that ship for the Sub-Zero subtitle
+`scripts/train_learned_gate.py` that ship for the VoiDex subtitle
 gate — only the mask flag (`--mask-features`) and the feature-schema
 flag (`--feature-schema corpus`) differ at the CLI. The diagnostic is
 genuinely domain-agnostic. A medical or financial or recsys team

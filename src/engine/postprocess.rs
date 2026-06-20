@@ -23,9 +23,106 @@ pub fn postprocess(cues: &mut [SubtitleCue]) {
     normalize_contractions(cues);
     repair_grammar_artifacts(cues);
     detect_and_label_non_speech(cues);
+    uncensor_profanity(cues);
     cleanup_artifacts(cues);
     fix_capitalization(cues);
     compress_reading_rate(cues, DEFAULT_READING_RATE_CPS);
+}
+
+// ── Profanity uncensoring ────────────────────────────────────────────────────
+
+/// Undo whisper's self-censoring of profanity.
+///
+/// Professional subtitles transcribe exactly what is said. Whisper
+/// sometimes outputs "f***" or "s**t" instead of the actual words
+/// because its training data contained censored web text. This pass
+/// restores the uncensored forms so subtitles match the spoken audio.
+///
+/// Runs BEFORE cleanup_artifacts so the restored words participate
+/// in contraction repair and capitalization normally.
+fn uncensor_profanity(cues: &mut [SubtitleCue]) {
+    // Sorted longest-first so multi-word patterns match before fragments.
+    const PATTERNS: &[(&str, &str)] = &[
+        ("shut the f*** up", "shut the fuck up"),
+        ("what the f***", "what the fuck"),
+        ("piece of s***", "piece of shit"),
+        ("motherf***er", "motherfucker"),
+        ("motherf**ker", "motherfucker"),
+        ("holy s***", "holy shit"),
+        ("bull****", "bullshit"),
+        ("bulls**t", "bullshit"),
+        ("god****", "goddamn"),
+        ("godd**n", "goddamn"),
+        ("a**hole", "asshole"),
+        ("a$$hole", "asshole"),
+        ("b****", "bitch"),
+        ("b***h", "bitch"),
+        ("b*tch", "bitch"),
+        ("f***", "fuck"),
+        ("f**k", "fuck"),
+        ("f*ck", "fuck"),
+        ("fu**", "fuck"),
+        ("s***", "shit"),
+        ("s**t", "shit"),
+        ("sh**", "shit"),
+        ("p****", "pussy"),
+        ("c***", "cunt"),
+        ("c**t", "cunt"),
+        ("d**k", "dick"),
+        ("d***", "damn"),
+        ("d**n", "damn"),
+        ("h***", "hell"),
+        ("a**", "ass"),
+        ("a$$", "ass"),
+    ];
+
+    for cue in cues.iter_mut() {
+        let mut text = cue.text.clone();
+        let mut changed = false;
+
+        for &(censored, uncensored) in PATTERNS {
+            if text
+                .to_ascii_lowercase()
+                .contains(&censored.to_ascii_lowercase())
+            {
+                text = replace_preserving_case(&text, censored, uncensored);
+                changed = true;
+            }
+        }
+
+        if changed {
+            cue.text = text;
+        }
+    }
+}
+
+/// Replace a censored pattern preserving the case of the first character.
+fn replace_preserving_case(text: &str, needle: &str, replacement: &str) -> String {
+    let lower_text = text.to_ascii_lowercase();
+    let lower_needle = needle.to_ascii_lowercase();
+    let mut result = String::with_capacity(text.len());
+    let mut start = 0usize;
+
+    while let Some(offset) = lower_text[start..].find(&lower_needle) {
+        let pos = start + offset;
+        result.push_str(&text[start..pos]);
+
+        // Preserve case: if original starts uppercase, capitalize replacement.
+        let first_byte = text.as_bytes().get(pos).copied().unwrap_or(0);
+        if (first_byte as char).is_ascii_uppercase() {
+            let mut chars = replacement.chars();
+            if let Some(first) = chars.next() {
+                result.push(first.to_ascii_uppercase());
+                result.extend(chars);
+            }
+        } else {
+            result.push_str(replacement);
+        }
+
+        start = pos + needle.len();
+    }
+    result.push_str(&text[start..]);
+    result
 }
 
 // ── Non-speech detection (whisper hallucination suppression) ─────────────────
@@ -50,9 +147,7 @@ fn detect_and_label_non_speech(cues: &mut [SubtitleCue]) {
 
         // Check for known non-speech markers already present.
         let lower = text.to_ascii_lowercase();
-        if lower.contains("[music]")
-            || lower.contains("[applause]")
-            || lower.contains("[laughter]")
+        if lower.contains("[music]") || lower.contains("[applause]") || lower.contains("[laughter]")
         {
             continue;
         }
@@ -88,14 +183,21 @@ fn is_repetitive_hallucination(text: &str) -> bool {
     // "DoodledoodleDoodledoodle" where whisper merges the repeated token
     // without spaces. Check if a 3-8 char substring repeats 3+ times.
     let lower = text.to_ascii_lowercase();
-    let lower_alpha: String = lower.chars().filter(|c| c.is_alphabetic()).collect();
+    // Operate on `char`s, not bytes: `lower` may contain multibyte content
+    // (e.g. Japanese mojibake), and slicing by byte index would split a
+    // codepoint and panic. For ASCII input (1 byte == 1 char) this is
+    // identical to the previous byte-based logic.
+    let lower_alpha: Vec<char> = lower.chars().filter(|c| c.is_alphabetic()).collect();
     if lower_alpha.len() >= 12 {
         for pat_len in 3..=8 {
             if pat_len > lower_alpha.len() / 3 {
                 break;
             }
             let pattern = &lower_alpha[..pat_len];
-            let repeat_count = lower_alpha.matches(pattern).count();
+            let repeat_count = lower_alpha
+                .windows(pat_len)
+                .filter(|w| *w == pattern)
+                .count();
             if repeat_count >= 4 && repeat_count * pat_len > lower_alpha.len() / 3 {
                 return true;
             }
@@ -128,8 +230,12 @@ fn is_repetitive_hallucination(text: &str) -> bool {
     let mut max_consecutive = 1usize;
     let mut current_run = 1usize;
     for window in words.windows(2) {
-        let a = window[0].trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase();
-        let b = window[1].trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase();
+        let a = window[0]
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_ascii_lowercase();
+        let b = window[1]
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_ascii_lowercase();
         if a == b && !a.is_empty() {
             current_run += 1;
             max_consecutive = max_consecutive.max(current_run);
@@ -146,7 +252,10 @@ fn is_repetitive_hallucination(text: &str) -> bool {
     if words.len() >= 6 {
         let unique_words: std::collections::HashSet<String> = words
             .iter()
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase())
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_ascii_lowercase()
+            })
             .filter(|w| !w.is_empty())
             .collect();
         // If 80%+ of words are the same token, it's hallucination.
@@ -1123,6 +1232,53 @@ mod tests {
         }];
         repair_grammar_artifacts(&mut cues);
         assert_eq!(cues[0].text, "I'm tired but I'm ready.");
+    }
+
+    // ── Profanity uncensoring ──────────────────────────────────────────
+
+    #[test]
+    fn uncensor_profanity_restores_common_patterns() {
+        let mut cues = vec![SubtitleCue {
+            index: 1,
+            timing: "00:00:00,000 --> 00:00:01,000".to_string(),
+            text: "What the f***! That's bull****.".to_string(),
+        }];
+        uncensor_profanity(&mut cues);
+        assert_eq!(cues[0].text, "What the fuck! That's bullshit.");
+    }
+
+    #[test]
+    fn uncensor_profanity_preserves_capitalization() {
+        let mut cues = vec![SubtitleCue {
+            index: 1,
+            timing: "00:00:00,000 --> 00:00:01,000".to_string(),
+            text: "F*** you! S*** happens.".to_string(),
+        }];
+        uncensor_profanity(&mut cues);
+        assert_eq!(cues[0].text, "Fuck you! Shit happens.");
+    }
+
+    #[test]
+    fn uncensor_profanity_leaves_clean_text_alone() {
+        let mut cues = vec![SubtitleCue {
+            index: 1,
+            timing: "00:00:00,000 --> 00:00:01,000".to_string(),
+            text: "Hello world, this is clean.".to_string(),
+        }];
+        let original = cues[0].text.clone();
+        uncensor_profanity(&mut cues);
+        assert_eq!(cues[0].text, original);
+    }
+
+    #[test]
+    fn uncensor_profanity_handles_multi_word_patterns() {
+        let mut cues = vec![SubtitleCue {
+            index: 1,
+            timing: "00:00:00,000 --> 00:00:01,000".to_string(),
+            text: "Shut the f*** up and holy s***!".to_string(),
+        }];
+        uncensor_profanity(&mut cues);
+        assert_eq!(cues[0].text, "Shut the fuck up and holy shit!");
     }
 
     // ── Reading-rate compressor (F.2 term E2) ────────────────────────────

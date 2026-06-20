@@ -78,7 +78,7 @@ impl Animation {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!(
-                        "sub-zero-tui: skipping line {} of {}: {}",
+                        "voidex-tui: skipping line {} of {}: {}",
                         line_no + 1,
                         path.display(),
                         e

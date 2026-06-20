@@ -57,7 +57,7 @@ def pick_run_dir(base_dir: Path, case_name: str) -> Path:
 
 
 def ensure_release_bin(repo_root: Path) -> Path:
-    exe = repo_root / "target" / "release" / ("sub-zero.exe" if os.name == "nt" else "sub-zero")
+    exe = repo_root / "target" / "release" / ("voidex.exe" if os.name == "nt" else "voidex")
     subprocess.run(
         ["cargo", "build", "--release"],
         cwd=str(repo_root),
@@ -275,8 +275,8 @@ def main(argv: list[str]) -> int:
         help="report output directory (default: benchmarks/reports)",
     )
     ap.add_argument(
-        "--sub-zero-bin",
-        help="path to sub-zero executable (default: build target/release)",
+        "--voidex-bin",
+        help="path to voidex executable (default: build target/release)",
     )
     ap.add_argument(
         "--timeout-secs",
@@ -332,7 +332,7 @@ def main(argv: list[str]) -> int:
     run_dir = pick_run_dir(Path(args.run_dir_base), case_name)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    sub_zero = Path(args.sub_zero_bin) if args.sub_zero_bin else ensure_release_bin(repo_root)
+    voidex = Path(args.voidex_bin) if args.voidex_bin else ensure_release_bin(repo_root)
 
     candidates: list[dict[str, Any]] = []
     candidate_names_in_order: list[str] = []
@@ -368,7 +368,7 @@ def main(argv: list[str]) -> int:
             report_reference = str(reference_path).replace("\\", "/")
 
         cmd = [
-            str(sub_zero),
+            str(voidex),
             str(variant_input),
             "--source-lang",
             source_lang,
@@ -379,19 +379,19 @@ def main(argv: list[str]) -> int:
         ]
         candidate_names_in_order.append(variant.name)
 
-        sub_zero_home = run_dir / ".sub-zero"
-        sub_zero_home.mkdir(parents=True, exist_ok=True)
+        voidex_home = run_dir / ".voidex"
+        voidex_home.mkdir(parents=True, exist_ok=True)
         code, elapsed, out = run_cmd(
             cmd,
             cwd=repo_root,
             timeout_secs=timeout_secs,
             env_extra={
-                "SUB_ZERO_HOME": str(sub_zero_home),
+                "VOIDEX_HOME": str(voidex_home),
             },
         )
         if code != 0:
             print(
-                f"[{variant.name}] sub-zero failed code={code}: {safe_text(out.strip())}",
+                f"[{variant.name}] voidex failed code={code}: {safe_text(out.strip())}",
                 file=sys.stderr,
             )
             candidates.append(

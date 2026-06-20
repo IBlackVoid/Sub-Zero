@@ -18,7 +18,7 @@ fn temp_case_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time should be monotonic")
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("sub_zero_{name}_{stamp}"));
+    let path = std::env::temp_dir().join(format!("voidex_{name}_{stamp}"));
     fs::create_dir_all(&path).expect("temp dir should be creatable");
     path
 }
@@ -228,11 +228,13 @@ fn process_file_translates_and_writes() {
         .process_input(&source)
         .expect("process should succeed");
     let cues = parse_srt_file(&output).expect("translated output should parse");
-    let metadata = dir.join("sample.sub-zero.json");
+    let metadata = dir.join("sample.voidex.json");
     let metadata_text = fs::read_to_string(&metadata).expect("metadata sidecar should exist");
 
-    assert_eq!(cues[0].text, "hello");
-    assert_eq!(cues[1].text, "thank you");
+    // postprocess() runs fix_capitalization, which intentionally capitalizes
+    // sentence starts (see fix_capitalization_works / postprocess_full_pipeline).
+    assert_eq!(cues[0].text, "Hello");
+    assert_eq!(cues[1].text, "Thank you");
     assert!(metadata_text.contains("\"algorithm\": \"IBVoid DOOM-QLOCK\""));
 }
 
@@ -295,8 +297,8 @@ fn process_file_emits_runtime_trace_when_enabled() {
     let output = pipeline
         .process_input(&source)
         .expect("process should succeed");
-    let metadata = dir.join("sample.sub-zero.json");
-    let trace_path = dir.join("sample.sub-zero.trace.json");
+    let metadata = dir.join("sample.voidex.json");
+    let trace_path = dir.join("sample.voidex.trace.json");
 
     let metadata_text = fs::read_to_string(&metadata).expect("metadata sidecar should exist");
     let trace_text = fs::read_to_string(&trace_path).expect("trace sidecar should exist");
@@ -309,7 +311,7 @@ fn process_file_emits_runtime_trace_when_enabled() {
 
     assert_eq!(output, dir.join("sample.en.srt"));
     assert!(metadata_text.contains("\"runtime_trace_file\""));
-    assert!(metadata_text.contains("sample.sub-zero.trace.json"));
+    assert!(metadata_text.contains("sample.voidex.trace.json"));
     assert_eq!(
         trace_json
             .get("trace_kind")
@@ -354,7 +356,7 @@ fn process_file_emits_voice_consistency_sidecar() {
     .expect("source srt should be writable");
 
     // Isolate voice priors store per test to avoid cross-test contamination.
-    std::env::set_var("SUB_ZERO_HOME", &dir);
+    std::env::set_var("VOIDEX_HOME", &dir);
 
     let pipeline = SubtitlePipeline::new(PipelineConfig {
         source_lang: "ja".to_string(),
@@ -405,7 +407,7 @@ fn process_file_emits_voice_consistency_sidecar() {
     pipeline
         .process_input(&source)
         .expect("process should succeed");
-    let metadata = dir.join("sample.sub-zero.json");
+    let metadata = dir.join("sample.voidex.json");
     let metadata_text = fs::read_to_string(&metadata).expect("metadata sidecar should exist");
     let metadata_json: serde_json::Value =
         serde_json::from_str(&metadata_text).expect("metadata should parse");
@@ -420,14 +422,14 @@ fn process_file_emits_voice_consistency_sidecar() {
         speakers_observed, 2,
         "Alice and Bob should both be observed: {voice}"
     );
-    // Voice priors should have persisted to the isolated SUB_ZERO_HOME.
+    // Voice priors should have persisted to the isolated VOIDEX_HOME.
     let priors_path = dir.join("voice_priors.json");
     assert!(
         priors_path.is_file(),
-        "voice_priors.json should be persisted to SUB_ZERO_HOME"
+        "voice_priors.json should be persisted to VOIDEX_HOME"
     );
 
-    std::env::remove_var("SUB_ZERO_HOME");
+    std::env::remove_var("VOIDEX_HOME");
 }
 
 #[test]
@@ -453,17 +455,30 @@ fn pathological_sidecar_fails_without_auto_repair() {
     let sidecar = dir.join("sample.srt");
     fs::write(&video, "video").expect("video file should be writable");
 
+    // A degraded sidecar whose dominant line saturates the transcript
+    // (high top_line_ratio) but is *interleaved* with distinct filler so
+    // no run of identical cues is long enough to trip the upstream
+    // decode-loop collapse. This keeps the test exercising the health
+    // gate / rescue path rather than the loop-collapse path: every other
+    // cue is the same hallucinated phrase (top_line_ratio ~= 0.5), but
+    // the longest consecutive identical run is 1.
     let mut body = String::new();
-    for i in 0..240usize {
+    for i in 0..300usize {
         let start = i;
         let end = i + 1;
+        let text = if i % 2 == 0 {
+            "わかります".to_string()
+        } else {
+            format!("フィラー{i}")
+        };
         body.push_str(&format!(
-            "{}\n00:{:02}:{:02},000 --> 00:{:02}:{:02},000\nわかります\n\n",
+            "{}\n00:{:02}:{:02},000 --> 00:{:02}:{:02},000\n{}\n\n",
             i + 1,
             (start / 60) % 60,
             start % 60,
             (end / 60) % 60,
-            end % 60
+            end % 60,
+            text
         ));
     }
     fs::write(&sidecar, body).expect("pathological sidecar should be writable");
@@ -1073,5 +1088,103 @@ fn write_parallel_confidence_sidecar_merges_chunk_offsets() {
             .and_then(serde_json::Value::as_f64)
             .expect("start should exist"),
         102.0
+    );
+}
+
+#[test]
+fn escalation_backend_caches_one_translator_per_rung() {
+    // P0.2 regression guard: before the fix, every failing scene built a fresh
+    // Translator (fresh interpreter + multi-GB model load each). The backend
+    // must reuse one Translator per rung label across all scenes routed to it.
+    use super::escalation::{BackendKind, MtBackendStep, SegmentBackend};
+    use super::NeuralSegmentBackend;
+
+    let pipeline = SubtitlePipeline::new(PipelineConfig {
+        source_lang: "ja".to_string(),
+        target_lang: "en".to_string(),
+        offline: true,
+        transcribe: false,
+        whisper_bin: None,
+        whisper_model: None,
+        whisper_args: Vec::new(),
+        audio_lang: None,
+        audio_stream_index: None,
+        skip_existing: false,
+        vad: false,
+        vad_threshold_db: -35.0,
+        vad_min_silence: 0.35,
+        vad_pad: 0.20,
+        verify: false,
+        verify_min_speech_overlap: 0.35,
+        gpu: false,
+        require_gpu: false,
+        parallel: false,
+        stream: false,
+        stream_async: false,
+        max_workers: 4,
+        chunk_duration_secs: 300.0,
+        // Phrase-table keeps the test hermetic: no Python, no models, no GPU.
+        force_phrase_table: true,
+        speaker_aware: false,
+        speaker_diarize: false,
+        speaker_max_speakers: 4,
+        mt_model: None,
+        mt_batch_size: None,
+        mt_max_batch_tokens: None,
+        mt_oom_retries: None,
+        mt_allow_cpu_fallback: true,
+        mt_force_cpu: false,
+        mt_daemon: false,
+        mt_enforce_quality_floor: true,
+        auto_repair_sidecar: true,
+        trace_runtime: false,
+        events_json: false,
+        events_file: None,
+        http_events: None,
+        ws_events: None,
+        quality_profile: QualityProfile::Balanced,
+    })
+    .expect("pipeline should build");
+
+    let backend = NeuralSegmentBackend::new(&pipeline);
+    let rung = MtBackendStep {
+        label: "nllb-1.3B",
+        model_name: "nllb-200-distilled-1.3B".to_string(),
+        beam_size: 6,
+        kind: BackendKind::Nllb,
+    };
+    let scene = vec![SubtitleCue {
+        index: 1,
+        timing: "00:00:00,000 --> 00:00:01,000".to_string(),
+        text: "こんにちは".to_string(),
+    }];
+
+    // Two scenes routed to the same rung → exactly one Translator built.
+    backend
+        .translate_segment(&rung, &scene)
+        .expect("first scene should translate");
+    backend
+        .translate_segment(&rung, &scene)
+        .expect("second scene should translate");
+    assert_eq!(
+        backend.translators.borrow().len(),
+        1,
+        "same rung must reuse one cached Translator"
+    );
+
+    // A different rung gets its own Translator — and only one.
+    let other_rung = MtBackendStep {
+        label: "nllb-600M",
+        model_name: "nllb-200-distilled-600M".to_string(),
+        beam_size: 4,
+        kind: BackendKind::Nllb,
+    };
+    backend
+        .translate_segment(&other_rung, &scene)
+        .expect("other rung should translate");
+    assert_eq!(
+        backend.translators.borrow().len(),
+        2,
+        "each rung owns exactly one cached Translator"
     );
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sub-Zero Neural MT Backend — CTranslate2 + NLLB-200.
+"""VoiDex Neural MT Backend — CTranslate2 + NLLB-200.
 
 Reads a JSON array of translation requests from stdin,
 writes a JSON array of responses to stdout.
@@ -33,7 +33,7 @@ import sys
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sub-Zero Neural MT Backend")
+    parser = argparse.ArgumentParser(description="VoiDex Neural MT Backend")
     parser.add_argument("--model", default="nllb-200-distilled-600M",
                         help="NLLB model name or path")
     parser.add_argument("--model-dir", default=None,
@@ -95,7 +95,7 @@ def main():
             file=sys.stderr,
         )
         sys.exit(1)
-    print(f"sub-zero: mt_model_path={model_path}", file=sys.stderr)
+    print(f"voidex: mt_model_path={model_path}", file=sys.stderr)
 
     # Load model and tokenizer.
     sp_model_path = find_sentencepiece_model(model_path)
@@ -180,7 +180,7 @@ def main():
             and args.allow_cpu_fallback
             and _is_cuda_oom_error(e)
         ):
-            print("sub-zero: mt_device=cpu (oom fallback)", file=sys.stderr)
+            print("voidex: mt_device=cpu (oom fallback)", file=sys.stderr)
             translator = _load_translator(model_path, "cpu", allow_cpu_fallback=False)
             results = _translate_with_adaptive_policy(
                 translator=translator,
@@ -232,13 +232,13 @@ def _configure_cuda_runtime():
     """Prepare CUDA shared library resolution for CTranslate2."""
     cuda_dirs = _discover_cuda_library_dirs()
     if not cuda_dirs:
-        print("sub-zero: cuda_libs=none-discovered", file=sys.stderr)
+        print("voidex: cuda_libs=none-discovered", file=sys.stderr)
         return
 
     cublas12 = _find_library_in_dirs("libcublas.so.12", cuda_dirs)
     cublaslt12 = _find_library_in_dirs("libcublasLt.so.12", cuda_dirs)
 
-    if (not cublas12 or not cublaslt12) and _env_flag("SUB_ZERO_ENABLE_CUDA_COMPAT_SHIM", True):
+    if (not cublas12 or not cublaslt12) and _env_flag("VOIDEX_ENABLE_CUDA_COMPAT_SHIM", True):
         cublas13 = _find_library_in_dirs("libcublas.so.13", cuda_dirs)
         cublaslt13 = _find_library_in_dirs("libcublasLt.so.13", cuda_dirs)
         if cublas13 and cublaslt13:
@@ -247,9 +247,9 @@ def _configure_cuda_runtime():
                 cuda_dirs.insert(0, compat_dir)
                 cublas12 = os.path.join(compat_dir, "libcublas.so.12")
                 cublaslt12 = os.path.join(compat_dir, "libcublasLt.so.12")
-                print(f"sub-zero: cuda_compat_shim=enabled dir={compat_dir}", file=sys.stderr)
+                print(f"voidex: cuda_compat_shim=enabled dir={compat_dir}", file=sys.stderr)
             elif compat_error:
-                print(f"sub-zero: cuda_compat_shim=failed error={compat_error}", file=sys.stderr)
+                print(f"voidex: cuda_compat_shim=failed error={compat_error}", file=sys.stderr)
 
     _prepend_ld_library_path(cuda_dirs)
 
@@ -260,11 +260,11 @@ def _configure_cuda_runtime():
         loaded.append("libcublasLt.so.12")
 
     if loaded:
-        print(f"sub-zero: cuda_libs=preloaded libs={','.join(loaded)}", file=sys.stderr)
+        print(f"voidex: cuda_libs=preloaded libs={','.join(loaded)}", file=sys.stderr)
     else:
         print(
-            "sub-zero: cuda_libs=missing required=libcublas.so.12,libcublasLt.so.12 "
-            "hint=set SUB_ZERO_CUDA_LIB_DIRS or install CUDA 12 compatible libs",
+            "voidex: cuda_libs=missing required=libcublas.so.12,libcublasLt.so.12 "
+            "hint=set VOIDEX_CUDA_LIB_DIRS or install CUDA 12 compatible libs",
             file=sys.stderr,
         )
 
@@ -280,7 +280,7 @@ def _discover_cuda_library_dirs():
     ]
     candidates = []
 
-    custom = os.environ.get("SUB_ZERO_CUDA_LIB_DIRS", "")
+    custom = os.environ.get("VOIDEX_CUDA_LIB_DIRS", "")
     if custom:
         candidates.extend(custom.split(os.pathsep))
 
@@ -357,23 +357,23 @@ def _preload_shared(path):
         ctypes.CDLL(path, mode=mode)
         return True
     except OSError as error:
-        print(f"sub-zero: cuda_preload_failed lib={path} error={error}", file=sys.stderr)
+        print(f"voidex: cuda_preload_failed lib={path} error={error}", file=sys.stderr)
         return False
 
 
 def _ensure_cuda12_compat_shim(cublas13_path, cublaslt13_path):
-    custom_dir = os.environ.get("SUB_ZERO_CUDA_COMPAT_DIR")
-    sub_zero_home = os.environ.get("SUB_ZERO_HOME")
+    custom_dir = os.environ.get("VOIDEX_CUDA_COMPAT_DIR")
+    voidex_home = os.environ.get("VOIDEX_HOME")
     candidate_dirs = []
     if custom_dir:
         candidate_dirs.append(custom_dir)
-    if sub_zero_home:
-        candidate_dirs.append(os.path.join(sub_zero_home, "cuda-compat"))
+    if voidex_home:
+        candidate_dirs.append(os.path.join(voidex_home, "cuda-compat"))
     candidate_dirs.extend(
         [
-            os.path.join(os.path.expanduser("~"), ".sub-zero", "cuda-compat"),
-            "/tmp/sub-zero-cuda-compat",
-            os.path.join(os.getcwd(), ".sub-zero-cuda-compat"),
+            os.path.join(os.path.expanduser("~"), ".voidex", "cuda-compat"),
+            "/tmp/voidex-cuda-compat",
+            os.path.join(os.getcwd(), ".voidex-cuda-compat"),
         ]
     )
     links = {
@@ -415,11 +415,11 @@ def _load_translator(model_path, device, allow_cpu_fallback):
         translator = ctranslate2.Translator(model_path, device=device, compute_type="auto")
         # Force-init by running a trivial probe — catches lazy CUDA failures.
         translator.translate_batch([["▁test"]], target_prefix=[["eng_Latn"]], max_batch_size=1)
-        print(f"sub-zero: mt_device={device}", file=sys.stderr)
+        print(f"voidex: mt_device={device}", file=sys.stderr)
         return translator
     except RuntimeError as e:
         if device != "cpu" and allow_cpu_fallback:
-            print(f"sub-zero: mt_device=cpu (cuda fallback: {e})", file=sys.stderr)
+            print(f"voidex: mt_device=cpu (cuda fallback: {e})", file=sys.stderr)
             translator = ctranslate2.Translator(model_path, device="cpu", compute_type="auto")
             translator.translate_batch([["▁test"]], target_prefix=[["eng_Latn"]], max_batch_size=1)
             return translator
@@ -466,7 +466,7 @@ def _translate_with_oom_ladder(
             next_max_batch_tokens = max(256, max_batch_tokens // 2)
             print(
                 (
-                    "sub-zero: mt_oom_retry "
+                    "voidex: mt_oom_retry "
                     f"attempt={attempt}/{attempts - 1} "
                     f"device={device} "
                     f"beam={beam_size}->{next_beam} "
@@ -518,7 +518,7 @@ def _translate_with_adaptive_policy(translator, tokenized, requests, target_pref
         hard_max_batch_tokens = max(256, int(args.max_batch_tokens * 0.75))
         print(
             (
-                "sub-zero: mt_adaptive_hard "
+                "voidex: mt_adaptive_hard "
                 f"count={len(hard_indices)} "
                 f"beam={args.beam_size}->{hard_beam} "
                 f"max_batch_tokens={args.max_batch_tokens}->{hard_max_batch_tokens}"
@@ -577,7 +577,7 @@ def resolve_model_path(model_name, model_dir):
 
     # Generic models/nllb fallback is only safe for 600M family,
     # unless explicitly enabled.
-    allow_generic_nllb_fallback = _env_flag("SUB_ZERO_ALLOW_GENERIC_NLLB_FALLBACK", False)
+    allow_generic_nllb_fallback = _env_flag("VOIDEX_ALLOW_GENERIC_NLLB_FALLBACK", False)
     is_600m_family = "600m" in model_lower or model_lower in {
         "nllb",
         "nllb-200-distilled-600m",
@@ -607,9 +607,9 @@ def resolve_model_path(model_name, model_dir):
     if not is_600m_family and not allow_generic_nllb_fallback:
         print(
             (
-                "sub-zero: model_resolve_failed "
+                "voidex: model_resolve_failed "
                 f"requested={model_name} "
-                "hint=set SUB_ZERO_ALLOW_GENERIC_NLLB_FALLBACK=1 to force generic models/nllb fallback"
+                "hint=set VOIDEX_ALLOW_GENERIC_NLLB_FALLBACK=1 to force generic models/nllb fallback"
             ),
             file=sys.stderr,
         )

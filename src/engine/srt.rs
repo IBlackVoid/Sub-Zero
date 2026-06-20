@@ -288,7 +288,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time should be monotonic")
             .as_nanos();
-        std::env::temp_dir().join(format!("sub_zero_{name}_{stamp}.srt"))
+        std::env::temp_dir().join(format!("voidex_{name}_{stamp}.srt"))
     }
 
     #[test]

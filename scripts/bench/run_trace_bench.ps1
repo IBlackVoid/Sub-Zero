@@ -59,7 +59,7 @@ if ($Release) {
   cargo build --release | Out-Host
 }
 
-$exe = Join-Path $repoRoot "target\release\sub-zero.exe"
+$exe = Join-Path $repoRoot "target\release\voidex.exe"
 $useExe = Test-Path $exe
 if (-not $useExe) {
   Write-Host "note: release exe not found; falling back to cargo run --release"
@@ -79,7 +79,7 @@ for ($iter = 1; $iter -le $Iterations; $iter++) {
   }
 }
 
-$traceFiles = Get-ChildItem -Path $OutputDir -Filter "*.sub-zero.trace.json" | Select-Object -ExpandProperty FullName
+$traceFiles = Get-ChildItem -Path $OutputDir -Filter "*.voidex.trace.json" | Select-Object -ExpandProperty FullName
 if ($traceFiles.Count -eq 0) {
   throw "no trace files were produced in $OutputDir"
 }

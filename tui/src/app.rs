@@ -1,4 +1,4 @@
-//! sub-zero-tui — screen state machine.
+//! voidex-tui — screen state machine.
 //!
 //! Screens: Greeting → Picker → Running → Result → (back to Greeting).
 //! Layout/visual grammar locked in `docs/TUI_DESIGN.md`. Every screen
@@ -178,7 +178,7 @@ struct App {
     /// immutable.
     cue_preview_cache: Vec<(u32, String)>,
     /// Cached per-speaker voice priors loaded from
-    /// `~/.sub-zero/voice_priors.json`. Reloaded periodically so the
+    /// `~/.voidex/voice_priors.json`. Reloaded periodically so the
     /// signature display picks up new speakers as the engine learns
     /// them.
     voice_priors_cache: Vec<crate::voice_view::SpeakerSignature>,
@@ -329,7 +329,7 @@ impl App {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!("sub-zero-tui-{stamp}"));
+        let path = std::env::temp_dir().join(format!("voidex-tui-{stamp}"));
         std::fs::create_dir_all(&path)?;
         self.scratch_dir = Some(path.clone());
         Ok(path)
@@ -369,7 +369,7 @@ impl App {
                         self.pack.insert(stem.clone(), anim);
                         injected.push(stem);
                     }
-                    Err(e) => eprintln!("sub-zero-tui: skipping secret entry: {e}"),
+                    Err(e) => eprintln!("voidex-tui: skipping secret entry: {e}"),
                 }
             }
         }
@@ -396,7 +396,7 @@ impl App {
             return self.snapshot_frame(name);
         }
         if phrase == "snap" {
-            return self.snapshot_frame("sub-zero-snap.txt");
+            return self.snapshot_frame("voidex-snap.txt");
         }
         if let Some(rest) = phrase.strip_prefix("save ") {
             return self.save_output_as(rest.trim());
@@ -867,7 +867,7 @@ fn render(f: &mut ratatui::Frame, app: &App) {
 fn render_help_overlay(f: &mut ratatui::Frame, body: Rect) {
     let lines: Vec<Line<'static>> = vec![
         Line::from(Span::styled(
-            " sub-zero-tui · help ",
+            " voidex-tui · help ",
             Style::default()
                 .fg(palette::ACCENT_2)
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED),
@@ -1110,7 +1110,7 @@ fn render_boss_screen(f: &mut ratatui::Frame, area: Rect) {
     let lines: Vec<Line> = vec![
         Line::raw(""),
         Line::from(Span::styled(
-            "  Compiling sub-zero v0.1.0 (D:\\BVoid\\Work\\new-project)",
+            "  Compiling voidex v0.1.0 (D:\\BVoid\\Work\\new-project)",
             Style::default().fg(palette::TEXT),
         )),
         Line::from(Span::styled(
@@ -1160,7 +1160,7 @@ fn render_titlebar(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let (status_label, status_color) = status_for_screen(&app.screen);
     let title = Paragraph::new(Line::from(vec![
         Span::styled(
-            "Sub-Zero",
+            "VoiDex",
             Style::default()
                 .fg(palette::ACCENT_2)
                 .add_modifier(Modifier::BOLD),

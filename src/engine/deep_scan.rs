@@ -536,7 +536,7 @@ fn create_temp_scan_dir(input: &Path) -> Result<PathBuf, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("sub_zero_deep_scan_{stem}_{stamp}"));
+    let dir = std::env::temp_dir().join(format!("voidex_deep_scan_{stem}_{stamp}"));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }

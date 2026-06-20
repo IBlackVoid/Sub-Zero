@@ -312,7 +312,7 @@ fn start_engine(app: &mut App, cs: &ConfigureState) -> Screen {
             return Screen::Picker(PickerState {
                 input: cs.input_path.to_string_lossy().into(),
                 error: Some(
-                    "sub-zero engine binary not found (build with `cargo build --release`)".into(),
+                    "voidex engine binary not found (build with `cargo build --release`)".into(),
                 ),
                 selected_recent: None,
             });

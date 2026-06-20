@@ -23,3 +23,12 @@ pub(super) fn default_mt_oom_retries_for_profile(profile: QualityProfile) -> usi
         QualityProfile::Strict => 3,
     }
 }
+
+/// Base beam width per profile — the starting rung for the escalation ladder.
+pub(super) fn default_mt_beam_for_profile(profile: QualityProfile) -> usize {
+    match profile {
+        QualityProfile::Fast => 2,
+        QualityProfile::Balanced => 4,
+        QualityProfile::Strict => 8,
+    }
+}

@@ -22,7 +22,7 @@ cargo run --release -- \
   --no-transcribe \
   --trace-runtime
 
-trace_path="$tmp_dir/clip_10s.ja.sub-zero.trace.json"
+trace_path="$tmp_dir/clip_10s.ja.voidex.trace.json"
 test -f "$trace_path"
 
 python3 - <<'PY' "$trace_path"

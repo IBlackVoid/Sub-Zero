@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Sub-Zero are documented in this file.
+All notable changes to VoiDex are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -61,5 +61,5 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - F.3 counterfactual MI leakage diagnostic + Lemma 1
   (Mask-Induced Coverage Bound).
 
-[Unreleased]: https://github.com/IBlackVoid/Sub-Zero/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/IBlackVoid/Sub-Zero/releases/tag/v0.1.0
+[Unreleased]: https://github.com/IBlackVoid/VoiDex/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/IBlackVoid/VoiDex/releases/tag/v0.1.0

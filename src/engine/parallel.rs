@@ -74,8 +74,7 @@ fn parallel_transcribe_inner(
     // Probe actual GPU availability BEFORE computing timeout estimates.
     // The user may pass --gpu but Python whisper can silently fall back to CPU
     // when CUDA/Triton is missing, making GPU-based timeout estimates far too short.
-    let gpu_actually_available =
-        crate::engine::transcribe::probe_python_gpu_available(config);
+    let gpu_actually_available = crate::engine::transcribe::probe_python_gpu_available(config);
     let effective_config = if config.gpu && !gpu_actually_available {
         eprintln!(
             "warning: --gpu was requested but CUDA is not available for Python whisper; \
@@ -89,7 +88,11 @@ fn parallel_transcribe_inner(
     };
 
     let monitor = if let Some(path) = checkpoint_path {
-        Some(Arc::new(ChunkRunMonitor::new(path, chunks, &effective_config)?))
+        Some(Arc::new(ChunkRunMonitor::new(
+            path,
+            chunks,
+            &effective_config,
+        )?))
     } else {
         None
     };

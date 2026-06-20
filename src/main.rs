@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use sub_zero::engine::doom_qlock::DoomQlock;
-use sub_zero::engine::http_sidecar::{start_http_sidecar, HttpSidecarConfig};
-use sub_zero::engine::pipeline::{PipelineConfig, SubtitlePipeline};
-use sub_zero::engine::transcribe::QualityProfile;
-use sub_zero::engine::ws_sidecar::{start_ws_sidecar, WsSidecarConfig};
+use voidex::engine::doom_qlock::DoomQlock;
+use voidex::engine::http_sidecar::{start_http_sidecar, HttpSidecarConfig};
+use voidex::engine::pipeline::{PipelineConfig, SubtitlePipeline};
+use voidex::engine::transcribe::QualityProfile;
+use voidex::engine::ws_sidecar::{start_ws_sidecar, WsSidecarConfig};
 
 #[derive(Debug, Clone)]
 struct Args {
@@ -70,6 +70,10 @@ fn run() -> Result<(), String> {
         println!("{}", help_text());
         return Ok(());
     }
+
+    // Rebrand carry-over: move any legacy `~/.sub-zero` state to `~/.voidex`
+    // before any path consumer touches it. Best-effort and idempotent.
+    voidex::migrate_legacy_home();
 
     let args = parse_args(raw_args)?;
 
@@ -745,10 +749,10 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
 
 fn help_text() -> String {
     [
-        "Sub-Zero - Offline Subtitle Translator",
+        "VoiDex - Offline Subtitle Translator",
         "",
         "Usage:",
-        "  sub-zero -i <file> [<file> ...] [options]",
+        "  voidex -i <file> [<file> ...] [options]",
         "",
         "Core Options:",
         "  --source-lang <code>     Source language (default: ja)",
@@ -792,7 +796,7 @@ fn help_text() -> String {
         "  --speaker-max-speakers <n>  Upper bound for diarization clusters (default: 4)",
         "  --doom-qlock             Enable adaptive IBVoid DOOM-QLOCK runtime policy (default: on)",
         "  --no-doom-qlock          Disable IBVoid DOOM-QLOCK and use fixed CLI settings",
-        "  --trace-runtime         Emit <input>.sub-zero.trace.json with per-stage timings",
+        "  --trace-runtime         Emit <input>.voidex.trace.json with per-stage timings",
         "  --events-json           Emit JSON-lines event stream (for streaming/integration)",
         "  --events-file <path>    Append JSON-lines events to a file (requires --events-json)",
         "  --http-events <addr>    Start local HTTP sidecar (SSE) at addr; enables --events-json",

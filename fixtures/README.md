@@ -20,7 +20,7 @@ recording is in the **public domain**:
 
 The clip here was downloaded from the Whisper repository, trimmed to
 exactly ten seconds, and re-encoded as 16 kHz mono 16-bit PCM WAV — the
-format Sub-Zero's audio pipeline expects internally.
+format VoiDex's audio pipeline expects internally.
 
 **Reference transcript.** The `.en.srt` is a single-cue ground truth.
 Whisper's actual segmentation will be finer-grained; the test asserts

@@ -21,7 +21,7 @@ pub(super) fn metadata_sidecar_path(input: &Path) -> Result<PathBuf, String> {
         .file_stem()
         .ok_or_else(|| format!("invalid input filename: {}", input.display()))?;
     let mut file_name = OsString::from(stem);
-    file_name.push(".sub-zero.json");
+    file_name.push(".voidex.json");
     Ok(input.with_file_name(file_name))
 }
 
@@ -30,7 +30,7 @@ pub(super) fn trace_sidecar_path(input: &Path) -> Result<PathBuf, String> {
         .file_stem()
         .ok_or_else(|| format!("invalid input filename: {}", input.display()))?;
     let mut file_name = OsString::from(stem);
-    file_name.push(".sub-zero.trace.json");
+    file_name.push(".voidex.trace.json");
     Ok(input.with_file_name(file_name))
 }
 
@@ -67,14 +67,14 @@ pub(super) fn checkpoint_dir_for(video: &Path) -> Result<PathBuf, String> {
     video_key.hash(&mut hasher);
     let run_hash = format!("{:016x}", hasher.finish());
 
-    let base = if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
+    let base = if let Some(home) = std::env::var_os("VOIDEX_HOME") {
         PathBuf::from(home)
     } else if let Some(home) = std::env::var_os("HOME") {
-        PathBuf::from(home).join(".sub-zero")
+        PathBuf::from(home).join(".voidex")
     } else if let Some(home) = std::env::var_os("USERPROFILE") {
-        PathBuf::from(home).join(".sub-zero")
+        PathBuf::from(home).join(".voidex")
     } else {
-        std::env::temp_dir().join(".sub-zero")
+        std::env::temp_dir().join(".voidex")
     };
 
     let dir = base.join("checkpoints").join(run_hash);

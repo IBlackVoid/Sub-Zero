@@ -251,16 +251,16 @@ fn infer_backend_from_fingerprint(device_fingerprint: &str) -> Option<String> {
 }
 
 pub(super) fn default_history_path() -> PathBuf {
-    if let Some(home) = std::env::var_os("SUB_ZERO_HOME") {
+    if let Some(home) = std::env::var_os("VOIDEX_HOME") {
         return PathBuf::from(home).join("history.json");
     }
     if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home).join(".sub-zero").join("history.json");
+        return PathBuf::from(home).join(".voidex").join("history.json");
     }
     if let Some(home) = std::env::var_os("USERPROFILE") {
-        return PathBuf::from(home).join(".sub-zero").join("history.json");
+        return PathBuf::from(home).join(".voidex").join("history.json");
     }
-    PathBuf::from(".sub-zero-history.json")
+    PathBuf::from(".voidex-history.json")
 }
 
 pub(super) fn load_history(path: &Path) -> Result<HistoryStore, String> {

@@ -1,6 +1,6 @@
-//! Sub-Zero — offline-first subtitle translation engine.
+//! VoiDex — offline-first subtitle translation engine.
 //!
-//! Sub-Zero turns a local media file or `.srt` into a translated SRT with
+//! VoiDex turns a local media file or `.srt` into a translated SRT with
 //! auditable quality metadata, without leaving the machine. The binary at
 //! `src/main.rs` is a thin CLI wrapper around this library.
 //!
@@ -32,15 +32,53 @@
 
 pub mod engine;
 
+/// One-time, best-effort migration of the legacy `~/.sub-zero` state
+/// directory to the rebranded `~/.voidex` location.
+///
+/// Historically VoiDex shipped as "Sub-Zero" and kept its checkpoints,
+/// character glossaries, and DOOM-QLOCK history under `~/.sub-zero`. After
+/// the rebrand the canonical location is `~/.voidex` (see
+/// [`engine::pipeline`] path resolution). Existing users would otherwise
+/// silently lose in-progress checkpoints, so the binary calls this once at
+/// startup to move the directory across.
+///
+/// Behaviour:
+/// - If `VOIDEX_HOME` is set the user owns the location explicitly; nothing
+///   is moved (the corresponding legacy override was `SUB_ZERO_HOME`, which
+///   the rebrand intentionally retired — see the env-var clean break).
+/// - The default location is resolved with the same precedence the engine
+///   uses: `HOME`, then `USERPROFILE`, then the system temp dir.
+/// - The move only happens when the legacy dir exists and the new dir does
+///   not, so it is idempotent and never clobbers existing `~/.voidex` state.
+/// - Any I/O error is swallowed: a failed migration must never block
+///   startup — the engine simply recreates state under the new path.
+pub fn migrate_legacy_home() {
+    use std::path::PathBuf;
+
+    // Explicit override: the user controls the path, leave it untouched.
+    if std::env::var_os("VOIDEX_HOME").is_some() {
+        return;
+    }
+    let parent = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+
+    let legacy = parent.join(".sub-zero");
+    let current = parent.join(".voidex");
+    if legacy.is_dir() && !current.exists() {
+        let _ = std::fs::rename(&legacy, &current);
+    }
+}
+
 // Most commonly used types are re-exported at the crate root so downstream
-// callers can `use sub_zero::PipelineConfig` instead of reaching deep into
-// the module tree. Deeper modules remain available under `sub_zero::engine`.
+// callers can `use voidex::PipelineConfig` instead of reaching deep into
+// the module tree. Deeper modules remain available under `voidex::engine`.
 pub use engine::doom_qlock::DoomQlock;
 pub use engine::f3_stream::F3StreamEstimator;
 pub use engine::http_sidecar::{start_http_sidecar, HttpSidecarConfig};
 pub use engine::lfas::{
-    ArmId, F3Sample, LfasConfig, LfasScheduler,
-    phi, phi_hellinger, phi_sharpened, sharpening_gap,
+    phi, phi_hellinger, phi_sharpened, sharpening_gap, ArmId, F3Sample, LfasConfig, LfasScheduler,
 };
 pub use engine::pipeline::{PipelineConfig, SubtitlePipeline};
 pub use engine::transcribe::QualityProfile;

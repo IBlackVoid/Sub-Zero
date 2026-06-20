@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Roll up per-run DOOM-QLOCK history into the global planner cache.
 
-Each Sub-Zero run writes its own `.sub-zero/history.json` next to its
+Each VoiDex run writes its own `.voidex/history.json` next to its
 output directory. Those records are never merged into the global
-`~/.sub-zero/history.json` the planner reads from at startup, so the
+`~/.voidex/history.json` the planner reads from at startup, so the
 planner stays cold even after a 70-stream corpus run.
 
 This script scans a search root (default: `benchmarks/runs/`), unions
@@ -39,11 +39,11 @@ class MergeStats:
 
 
 def default_global_history_path() -> Path:
-    sub_zero_home = os.environ.get("SUB_ZERO_HOME")
-    if sub_zero_home:
-        return Path(sub_zero_home) / "history.json"
+    voidex_home = os.environ.get("VOIDEX_HOME")
+    if voidex_home:
+        return Path(voidex_home) / "history.json"
     home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or "."
-    return Path(home) / ".sub-zero" / "history.json"
+    return Path(home) / ".voidex" / "history.json"
 
 
 def load_history(path: Path) -> dict:
@@ -88,7 +88,7 @@ def merge(
     successful_only: bool,
     dry_run: bool,
 ) -> MergeStats:
-    sources = sorted(search_root.rglob(".sub-zero/history.json"))
+    sources = sorted(search_root.rglob(".voidex/history.json"))
     sources_scanned = 0
     records_in_sources = 0
     new_records: list[dict] = []
@@ -151,7 +151,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--search-root",
         default="benchmarks/runs",
-        help="directory to scan for per-run .sub-zero/history.json files",
+        help="directory to scan for per-run .voidex/history.json files",
     )
     parser.add_argument(
         "--global-path",

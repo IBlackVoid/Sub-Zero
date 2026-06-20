@@ -3,15 +3,15 @@ members = [".", "tui", "xtask"]
 resolver = "2"
 
 [package]
-name = "sub-zero"
+name = "voidex"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 authors = ["IBVoid"]
 description = "Offline-first subtitle translation engine — local ASR + neural MT + adaptive scheduling + learned quality gate, no cloud."
-documentation = "https://docs.rs/sub-zero"
-homepage = "https://github.com/IBlackVoid/Sub-Zero"
-repository = "https://github.com/IBlackVoid/Sub-Zero"
+documentation = "https://docs.rs/voidex"
+homepage = "https://github.com/IBlackVoid/VoiDex"
+repository = "https://github.com/IBlackVoid/VoiDex"
 readme = "README.md"
 license = "MIT"
 keywords = ["subtitle", "translation", "whisper", "nllb", "offline"]
@@ -33,11 +33,11 @@ exclude = [
 ]
 
 [lib]
-name = "sub_zero"
+name = "voidex"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sub-zero"
+name = "voidex"
 path = "src/main.rs"
 
 [dependencies]

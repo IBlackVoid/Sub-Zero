@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn fs_cache_persists_across_handles() {
         let dir = std::env::temp_dir().join(format!(
-            "sub_zero_cache_test_{}",
+            "voidex_cache_test_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

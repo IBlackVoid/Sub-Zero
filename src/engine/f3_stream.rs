@@ -370,10 +370,16 @@ mod tests {
             est.observe(&[value], is_pass);
         }
         let sample = est.sample();
-        assert!(sample.is_some(), "should produce sample after 100 observations");
+        assert!(
+            sample.is_some(),
+            "should produce sample after 100 observations"
+        );
         let mi = sample.unwrap().delta_i;
         // With perfect prediction, MI should be > 0.
-        assert!(mi > 0.0, "MI should be positive for predictive feature, got {mi}");
+        assert!(
+            mi > 0.0,
+            "MI should be positive for predictive feature, got {mi}"
+        );
     }
 
     #[test]
@@ -387,10 +393,7 @@ mod tests {
         assert!(sample.is_some());
         let mi = sample.unwrap().delta_i;
         // Constant feature → all counts in one bin → MI ≈ 0.
-        assert!(
-            mi < 0.01,
-            "MI should be ~0 for constant feature, got {mi}"
-        );
+        assert!(mi < 0.01, "MI should be ~0 for constant feature, got {mi}");
     }
 
     #[test]

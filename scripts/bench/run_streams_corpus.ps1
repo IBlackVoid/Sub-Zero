@@ -26,10 +26,10 @@ $py = Resolve-Py
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
 if ($PyWhisperModel) {
-  # Forces Sub-Zero's python-whisper backend to avoid accidentally selecting a huge model
+  # Forces VoiDex's python-whisper backend to avoid accidentally selecting a huge model
   # in strict retries (e.g. large-v3) on 8GB VRAM GPUs.
-  $env:SUB_ZERO_PYWHISPER_MODEL = $PyWhisperModel
-  $env:SUB_ZERO_PYWHISPER_MODEL_DIR = (Resolve-Path (Join-Path $repoRoot "models\\whisper")).Path
+  $env:VOIDEX_PYWHISPER_MODEL = $PyWhisperModel
+  $env:VOIDEX_PYWHISPER_MODEL_DIR = (Resolve-Path (Join-Path $repoRoot "models\\whisper")).Path
   Write-Host "Pinned python-whisper model: $PyWhisperModel"
 }
 

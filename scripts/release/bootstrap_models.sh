@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Sub-Zero release bootstrap: download Whisper + NLLB weights from
+# VoiDex release bootstrap: download Whisper + NLLB weights from
 # HuggingFace at *pinned commit SHAs*, then materialise them at the
 # directory layout the engine expects.
 #
@@ -8,7 +8,7 @@
 #   - Reproducibility: a `0.1.0` build downloads byte-identical weights
 #     today and a year from now, regardless of upstream re-uploads.
 #   - Supply chain: a compromised tag (e.g. an attacker pushing a new
-#     `main`) cannot retroactively change the bits a Sub-Zero user is
+#     `main`) cannot retroactively change the bits a VoiDex user is
 #     running. The SHA is the trust anchor; nothing else is.
 #
 # Updating: run `git ls-remote https://huggingface.co/<org>/<model> HEAD`
@@ -33,12 +33,12 @@ WHISPER_LARGE_SHA="06f233fe06e710322aca913c1bc4249a0d71fce1"
 # ─── derived paths ─────────────────────────────────────────────────────
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SUB_ZERO_HOME="${SUB_ZERO_HOME:-$HOME/.sub-zero}"
-MODEL_ROOT="${SUB_ZERO_HOME}/models"
+VOIDEX_HOME="${VOIDEX_HOME:-$HOME/.voidex}"
+MODEL_ROOT="${VOIDEX_HOME}/models"
 
 mkdir -p "${MODEL_ROOT}/whisper" "${MODEL_ROOT}/nllb"
 
-echo "sub-zero bootstrap:"
+echo "voidex bootstrap:"
 echo "  model_root=${MODEL_ROOT}"
 
 # ─── path A: pre-staged local models (offline / air-gapped) ────────────
@@ -46,7 +46,7 @@ echo "  model_root=${MODEL_ROOT}"
 # skip every network call. We copy and exit. No SHA verification is
 # performed in this path; the operator owns provenance.
 
-if [[ -d "${ROOT_DIR}/models" ]] && [[ "${SUB_ZERO_BOOTSTRAP_OFFLINE:-0}" = "1" ]]; then
+if [[ -d "${ROOT_DIR}/models" ]] && [[ "${VOIDEX_BOOTSTRAP_OFFLINE:-0}" = "1" ]]; then
   echo "  source_models=${ROOT_DIR}/models (offline mode)"
   shopt -s nullglob
   for item in "${ROOT_DIR}"/models/*; do

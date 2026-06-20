@@ -8,9 +8,8 @@ pub(super) fn create_temp_rescue_dir(scene_start: usize) -> Result<PathBuf, Stri
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "sub_zero_source_scene_rescue_{scene_start}_{stamp}"
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("voidex_source_scene_rescue_{scene_start}_{stamp}"));
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     Ok(dir)
 }

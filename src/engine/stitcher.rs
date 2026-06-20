@@ -92,7 +92,7 @@ pub struct TimedCue {
 /// Walk through sorted cues and remove near-duplicates (same text,
 /// overlapping time) that arise from chunk overlap regions.
 ///
-/// `pub` for `cargo bench` reach via `sub_zero::bench_internals`. Not a
+/// `pub` for `cargo bench` reach via `voidex::bench_internals`. Not a
 /// stability surface — see lib.rs for the public-API contract.
 #[doc(hidden)]
 pub fn deduplicate_overlaps(cues: &[TimedCue]) -> Vec<TimedCue> {

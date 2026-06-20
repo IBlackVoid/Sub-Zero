@@ -31,6 +31,11 @@ pub struct Translator {
     enforce_quality_floor: bool,
     backend: TranslatorBackend,
     neural_config: Option<NeuralMTConfig>,
+    /// Set when a non-Strict profile emitted best-effort output that fell below
+    /// the neural MT quality floor (Q1). The pipeline reads this after
+    /// translation to mark the sidecar verdict.pass=false while still writing
+    /// the SRT. Interior mutability keeps the public `translate_*` API on `&self`.
+    last_best_effort_floor_reason: std::cell::RefCell<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +54,10 @@ pub struct TranslatorConfig {
     pub mt_allow_cpu_fallback: bool,
     pub mt_daemon: bool,
     pub mt_enforce_quality_floor: bool,
+    /// Optional beam-width override. When `None`, the profile's decode default
+    /// is used. The per-segment escalation ladder sets this to apply guardrail
+    /// #1's beam bump at a stronger rung.
+    pub mt_beam_size: Option<usize>,
     pub quality_profile: QualityProfile,
 }
 
@@ -82,6 +91,7 @@ impl Translator {
         let mt_allow_cpu_fallback = config.mt_allow_cpu_fallback;
         let mt_daemon = config.mt_daemon;
         let mt_enforce_quality_floor = config.mt_enforce_quality_floor;
+        let mt_beam_size = config.mt_beam_size;
         let quality_profile = config.quality_profile;
         let script_path = resolve_translate_script_path(mt_daemon);
         let can_use_neural =
@@ -117,7 +127,7 @@ impl Translator {
                 max_batch_tokens,
                 oom_retries,
                 allow_cpu_fallback_on_oom,
-                beam_size: decode.beam_size,
+                beam_size: mt_beam_size.unwrap_or(decode.beam_size),
                 repetition_penalty: decode.repetition_penalty,
                 no_repeat_ngram_size: decode.no_repeat_ngram_size,
                 prepend_prev_context: decode.prepend_prev_context,
@@ -174,12 +184,20 @@ impl Translator {
             enforce_quality_floor: mt_enforce_quality_floor,
             backend,
             neural_config,
+            last_best_effort_floor_reason: std::cell::RefCell::new(None),
         })
     }
 
     #[allow(dead_code)]
     pub fn backend(&self) -> TranslatorBackend {
         self.backend
+    }
+
+    /// The neural MT quality-floor reason from the most recent translation when a
+    /// non-Strict profile emitted best-effort output below the floor (Q1), else
+    /// `None`. The pipeline reads this to set the sidecar `verdict.pass=false`.
+    pub fn take_best_effort_floor_reason(&self) -> Option<String> {
+        self.last_best_effort_floor_reason.borrow_mut().take()
     }
 
     /// Translate a single cue (phrase-table mode only).
@@ -330,6 +348,28 @@ impl Translator {
                         "warning: ibvoid-doom-qlock mt_quality_floor_bypassed score={:.3} floor={:.3}",
                         quality, min_quality
                     );
+                    return Ok(translated);
+                }
+                // Profile-aware quality floor (Q1).
+                // Policy rationale + evidence: see agent-memory
+                // finding_ja_en_casual_mt_quality (JA→EN casual MT limit). A
+                // casual long-form video legitimately scores ~0.0; hard-failing
+                // ALL profiles meant a Fast user got ZERO subtitles. Only Strict
+                // hard-fails now; Fast/Balanced emit honest best-effort and let
+                // the sidecar verdict carry the failure reason (the SRT is still
+                // written). `--mt-no-quality-floor` remains a universal override.
+                if self.quality_profile != QualityProfile::Strict {
+                    let reason = format!(
+                        "neural MT quality floor failure at final stage: score={quality:.3} floor={min_quality:.3} (best-effort emitted, profile={})",
+                        self.quality_profile.as_str()
+                    );
+                    eprintln!(
+                        "warning: ibvoid-doom-qlock mt_quality_floor_best_effort profile={} score={:.3} floor={:.3} (best-effort subtitles emitted; sidecar verdict.pass=false)",
+                        self.quality_profile.as_str(),
+                        quality,
+                        min_quality
+                    );
+                    *self.last_best_effort_floor_reason.borrow_mut() = Some(reason);
                     return Ok(translated);
                 }
                 return Err(format!(
@@ -1025,8 +1065,22 @@ fn decode_profile(profile: QualityProfile) -> DecodeProfile {
     }
 }
 
+/// True when the persistent MT daemon script (`scripts/mt_daemon.py`) is
+/// resolvable, so a Translator built with `mt_daemon: true` will actually get
+/// the daemon protocol rather than silently degrading to the phrase table.
+///
+/// An explicit `VOIDEX_MT_SCRIPT` override wins unconditionally inside
+/// `resolve_translate_script_path`, so its protocol choice must be respected:
+/// report unavailable and let the caller inherit the configured transport.
+pub(crate) fn mt_daemon_script_available() -> bool {
+    if std::env::var("VOIDEX_MT_SCRIPT").is_ok_and(|v| !v.trim().is_empty()) {
+        return false;
+    }
+    resolve_translate_script_path(true).is_some()
+}
+
 fn resolve_translate_script_path(mt_daemon: bool) -> Option<PathBuf> {
-    if let Ok(explicit) = std::env::var("SUB_ZERO_MT_SCRIPT") {
+    if let Ok(explicit) = std::env::var("VOIDEX_MT_SCRIPT") {
         let path = PathBuf::from(explicit.trim());
         if path.is_file() {
             return Some(path);
@@ -1178,6 +1232,7 @@ mod tests {
             mt_allow_cpu_fallback: true,
             mt_daemon: false,
             mt_enforce_quality_floor: true,
+            mt_beam_size: None,
             quality_profile: QualityProfile::Balanced,
         })
         .expect("translator should build");
@@ -1201,6 +1256,7 @@ mod tests {
             mt_allow_cpu_fallback: true,
             mt_daemon: false,
             mt_enforce_quality_floor: true,
+            mt_beam_size: None,
             quality_profile: QualityProfile::Balanced,
         })
         .expect("translator should build");
@@ -1227,6 +1283,7 @@ mod tests {
             mt_allow_cpu_fallback: true,
             mt_daemon: false,
             mt_enforce_quality_floor: true,
+            mt_beam_size: None,
             quality_profile: QualityProfile::Balanced,
         })
         .expect("translator should build");

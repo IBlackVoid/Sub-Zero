@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sub-Zero Neural MT Daemon.
+"""VoiDex Neural MT Daemon.
 
 Protocol: length-prefixed JSON frames on stdin/stdout.
 
@@ -118,7 +118,7 @@ class BackendState:
         self.target_prefix = [args.target_lang]
         self.model_path = model_path
 
-        print(f"sub-zero: mt_daemon_loaded model={args.model} device={args.device}", file=sys.stderr)
+        print(f"voidex: mt_daemon_loaded model={args.model} device={args.device}", file=sys.stderr)
 
     def translate(self, requests: list[dict]) -> list[dict]:
         if not requests:
@@ -159,7 +159,7 @@ class BackendState:
             )
         except RuntimeError as e:
             if device == "cuda" and args.allow_cpu_fallback and backend._is_cuda_oom_error(e):
-                print("sub-zero: mt_device=cpu (oom fallback)", file=sys.stderr)
+                print("voidex: mt_device=cpu (oom fallback)", file=sys.stderr)
                 translator = backend._load_translator(
                     model_path=self.model_path,
                     device="cpu",
@@ -211,7 +211,7 @@ def main() -> int:
             out = state.translate(reqs)
             write_frame({"ok": True, "responses": out})
         except Exception as e:
-            print("sub-zero: mt_daemon_error", file=sys.stderr)
+            print("voidex: mt_daemon_error", file=sys.stderr)
             print(traceback.format_exc(), file=sys.stderr)
             write_frame({"ok": False, "error": str(e)})
 

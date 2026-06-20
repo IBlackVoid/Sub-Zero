@@ -2,8 +2,34 @@ use std::path::{Path, PathBuf};
 
 use crate::engine::EngineConfig;
 
+/// One-time, best-effort migration of the legacy `~/.sub-zero` state
+/// directory to the rebranded `~/.voidex` location.
+///
+/// The TUI is a separate crate from the engine library and stores its own
+/// preferences, recents, and secret envelopes under the same home dir, so
+/// it carries its own copy of this migration (kept in lock-step with
+/// `voidex::migrate_legacy_home` in the engine crate). Resolution
+/// precedence — `VOIDEX_HOME` override, else `HOME`, else `USERPROFILE`,
+/// else temp — matches the engine. Idempotent; any I/O error is ignored so
+/// a failed migration never blocks the UI.
+pub fn migrate_legacy_home() {
+    if std::env::var_os("VOIDEX_HOME").is_some() {
+        return;
+    }
+    let parent = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+
+    let legacy = parent.join(".sub-zero");
+    let current = parent.join(".voidex");
+    if legacy.is_dir() && !current.exists() {
+        let _ = std::fs::rename(&legacy, &current);
+    }
+}
+
 pub fn canonical_output_path(input: &Path, config: &EngineConfig) -> Option<PathBuf> {
-    // Sub-Zero canonical output naming: <stem>.<target>.srt next to input.
+    // VoiDex canonical output naming: <stem>.<target>.srt next to input.
     let parent = input.parent()?;
     let stem = input.file_stem()?.to_str()?;
     let lang = if config.target_lang.is_empty() {
@@ -105,7 +131,7 @@ pub fn sanitize_path_input(raw: &str) -> String {
 
 /// Where `:save` / `:snap` are allowed to write. Defaults to the
 /// process's current working directory; overridden by the
-/// `SUB_ZERO_TUI_WRITE_ROOT` environment variable when it points at an
+/// `VOIDEX_TUI_WRITE_ROOT` environment variable when it points at an
 /// existing directory.
 ///
 /// The policy is intentionally per-process and non-persistent — it
@@ -113,7 +139,7 @@ pub fn sanitize_path_input(raw: &str) -> String {
 /// preference. Operators who want a hard write boundary should launch
 /// the TUI with the env var explicitly set.
 pub fn tui_write_root() -> PathBuf {
-    if let Some(env_root) = std::env::var_os("SUB_ZERO_TUI_WRITE_ROOT") {
+    if let Some(env_root) = std::env::var_os("VOIDEX_TUI_WRITE_ROOT") {
         let p = PathBuf::from(env_root);
         if p.is_dir() {
             return p;
@@ -156,7 +182,7 @@ pub fn resolve_write_target(target: &str, root: &Path) -> Result<PathBuf, String
     };
     if !candidate.starts_with(root) {
         return Err(format!(
-            "path '{}' is outside the write root '{}'; set SUB_ZERO_TUI_WRITE_ROOT to override",
+            "path '{}' is outside the write root '{}'; set VOIDEX_TUI_WRITE_ROOT to override",
             candidate.display(),
             root.display()
         ));

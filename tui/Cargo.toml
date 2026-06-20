@@ -1,9 +1,9 @@
 [package]
-name = "sub-zero-tui"
+name = "voidex-tui"
 version = "0.1.0"
 edition = "2021"
 authors = ["IBVoid"]
-description = "Live dashboard for Sub-Zero — ratatui frontend over the engine event stream."
+description = "Live dashboard for VoiDex — ratatui frontend over the engine event stream."
 
 [dependencies]
 ratatui   = "0.28"
@@ -21,5 +21,5 @@ rodio     = { version = "0.20", default-features = false, features = ["wav"] }
 zeroize = "1"
 
 [[bin]]
-name = "sub-zero-tui"
+name = "voidex-tui"
 path = "src/main.rs"

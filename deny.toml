@@ -1,4 +1,4 @@
-# cargo-deny configuration for Sub-Zero.
+# cargo-deny configuration for VoiDex.
 #
 # Run locally with: cargo deny check
 # Updated by ci.yml's `deny` job on every PR and push.
@@ -14,7 +14,18 @@ all-features = false
 version = 2
 yanked = "deny"
 # Add advisory IDs here only with a written reason and a tracking issue.
-ignore = []
+ignore = [
+    # lru 0.12 `IterMut` Stacked Borrows unsoundness. Pulled only via
+    # ratatui 0.28, which uses lru as a plain get/put cache and never calls
+    # `iter_mut`, so the unsound path is unreachable from this workspace.
+    # Upgrading ratatui to 0.30 does NOT shed lru (verified 2026-06-10);
+    # revisit when ratatui drops or upgrades the dependency.
+    { id = "RUSTSEC-2026-0002", reason = "lru IterMut unsoundness unreachable: ratatui cache uses get/put only" },
+    # paste is unmaintained (informational). Compile-time proc-macro pulled
+    # via ratatui 0.28; no runtime surface. Removed upstream in ratatui 0.30 —
+    # picked up whenever the TUI migrates.
+    { id = "RUSTSEC-2024-0436", reason = "paste is a compile-time-only proc-macro dep of ratatui 0.28" },
+]
 
 # ---- Licenses --------------------------------------------------------------
 [licenses]

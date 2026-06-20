@@ -1,7 +1,7 @@
-# Sub-Zero human-evaluation harness (F.2)
+# VoiDex human-evaluation harness (F.2)
 
 A paper-ready, three-stage harness for blind side-by-side rating of
-Sub-Zero translation outputs.
+VoiDex translation outputs.
 
 ```
 prepare_pairs.py  -->  rater_cli.py  -->  aggregate.py

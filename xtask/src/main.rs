@@ -94,7 +94,7 @@ fn run_smoke() -> ExitCode {
         println!("[xtask] fixtures/clip_10s.wav present — running ffmpeg+neural smoke");
         if !cargo_with_env(
             &["test", "--test", "cli_integration", "ffmpeg_ffprobe_smoke"],
-            &[("SUB_ZERO_RUN_FFMPEG_SMOKE", "1")],
+            &[("VOIDEX_RUN_FFMPEG_SMOKE", "1")],
         ) {
             return ExitCode::FAILURE;
         }

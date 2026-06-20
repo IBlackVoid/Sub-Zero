@@ -14,7 +14,7 @@ def run(args: list[str], cwd: Path) -> int:
 
 
 def ensure_release_bin(repo_root: Path) -> Path:
-    exe = repo_root / "target" / "release" / ("sub-zero.exe" if os.name == "nt" else "sub-zero")
+    exe = repo_root / "target" / "release" / ("voidex.exe" if os.name == "nt" else "voidex")
     subprocess.run(
         ["cargo", "build", "--release"],
         cwd=str(repo_root),
@@ -42,7 +42,7 @@ def main(argv: list[str]) -> int:
         default="benchmarks/reports",
         help="report output directory (default: benchmarks/reports)",
     )
-    ap.add_argument("--sub-zero-bin", help="path to sub-zero executable (optional)")
+    ap.add_argument("--voidex-bin", help="path to voidex executable (optional)")
     ap.add_argument(
         "--timeout-secs",
         type=float,
@@ -97,7 +97,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     bench_script = repo_root / "scripts" / "bench" / "run_srt_benchmark.py"
-    sub_zero_bin = Path(args.sub_zero_bin) if args.sub_zero_bin else ensure_release_bin(repo_root)
+    voidex_bin = Path(args.voidex_bin) if args.voidex_bin else ensure_release_bin(repo_root)
 
     failures: list[Path] = []
     for case_path in cases:
@@ -110,8 +110,8 @@ def main(argv: list[str]) -> int:
             str(args.run_dir_base),
             "--reports-dir",
             str(args.reports_dir),
-            "--sub-zero-bin",
-            str(sub_zero_bin),
+            "--voidex-bin",
+            str(voidex_bin),
         ]
         if args.timeout_secs and args.timeout_secs > 0:
             cmd.extend(["--timeout-secs", str(args.timeout_secs)])

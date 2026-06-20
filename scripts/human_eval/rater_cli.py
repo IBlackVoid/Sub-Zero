@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive blind side-by-side rater for Sub-Zero outputs.
+"""Interactive blind side-by-side rater for VoiDex outputs.
 
 Resumable: ratings are appended to --out as soon as they are entered,
 and pairs already rated by this rater are skipped on restart.

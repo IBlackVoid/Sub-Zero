@@ -12,19 +12,19 @@ mkdir -p "${DIST_DIR}"
 
 if [[ -n "${TARGET_TRIPLE}" ]]; then
   cargo build --release --target "${TARGET_TRIPLE}"
-  BIN_PATH="${ROOT_DIR}/target/${TARGET_TRIPLE}/release/sub-zero"
+  BIN_PATH="${ROOT_DIR}/target/${TARGET_TRIPLE}/release/voidex"
   if [[ ! -f "${BIN_PATH}" ]]; then
-    BIN_PATH="${ROOT_DIR}/target/${TARGET_TRIPLE}/release/sub-zero.exe"
+    BIN_PATH="${ROOT_DIR}/target/${TARGET_TRIPLE}/release/voidex.exe"
   fi
-  PACKAGE_NAME="sub-zero_${TARGET_TRIPLE}_${STAMP}"
+  PACKAGE_NAME="voidex_${TARGET_TRIPLE}_${STAMP}"
 else
   cargo build --release
-  BIN_PATH="${ROOT_DIR}/target/release/sub-zero"
+  BIN_PATH="${ROOT_DIR}/target/release/voidex"
   if [[ ! -f "${BIN_PATH}" ]]; then
-    BIN_PATH="${ROOT_DIR}/target/release/sub-zero.exe"
+    BIN_PATH="${ROOT_DIR}/target/release/voidex.exe"
   fi
   HOST="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
-  PACKAGE_NAME="sub-zero_${HOST}_${STAMP}"
+  PACKAGE_NAME="voidex_${HOST}_${STAMP}"
 fi
 
 if [[ ! -f "${BIN_PATH}" ]]; then

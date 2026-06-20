@@ -16,7 +16,7 @@ use zeroize::Zeroize;
 
 const MANIFEST_MAGIC: &[u8; 8] = b"SZEE2M\0\0";
 const ASSET_MAGIC: &[u8; 8] = b"SZEE2A\0\0";
-const LEGACY_KEY_SALT: &[u8] = b"\x00sub-zero-easter-v1";
+const LEGACY_KEY_SALT: &[u8] = b"\x00voidex-easter-v1";
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;

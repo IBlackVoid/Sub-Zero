@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preview a single frame of a Sub-Zero TUI animation as ANSI.
+"""Preview a single frame of a VoiDex TUI animation as ANSI.
 
 Usage:
   python scripts/tui/preview.py assets/ascii/idle.jsonl

@@ -210,8 +210,8 @@ impl<const K: usize> LfasScheduler<K> {
             let var = state.variance();
             let n = f64::from(state.n);
             let log_term = (3.0 * f64::from(self.t).powi(2) / delta).ln();
-            let exploration = var.sqrt() * (2.0 * log_term / n).sqrt()
-                + 3.0 * self.reward_bound * log_term / n;
+            let exploration =
+                var.sqrt() * (2.0 * log_term / n).sqrt() + 3.0 * self.reward_bound * log_term / n;
             let lcb = state.mean - exploration;
 
             if lcb < best_lcb {
@@ -366,7 +366,11 @@ impl<const K: usize> LfasScheduler<K> {
             .iter()
             .enumerate()
             .filter(|(_, arm)| arm.n > 0)
-            .min_by(|(_, a), (_, b)| a.mean.partial_cmp(&b.mean).unwrap_or(std::cmp::Ordering::Equal))
+            .min_by(|(_, a), (_, b)| {
+                a.mean
+                    .partial_cmp(&b.mean)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .map(|(i, _)| i)
             .unwrap_or(0)
     }
@@ -386,8 +390,7 @@ impl<const K: usize> LfasScheduler<K> {
         let log_term = (3.0 * t * t / delta).ln().max(0.0);
 
         let sigma_max = self.max_sigma();
-        sigma_max * (2.0 * k * log_term / t).sqrt()
-            + 6.0 * k * self.reward_bound * log_term / t
+        sigma_max * (2.0 * k * log_term / t).sqrt() + 6.0 * k * self.reward_bound * log_term / t
     }
 }
 
@@ -594,8 +597,10 @@ mod tests {
             assert!(
                 phi_hellinger(window[1]) >= phi_hellinger(window[0]),
                 "phi_hellinger not monotone: f({}) = {} < f({}) = {}",
-                window[1], phi_hellinger(window[1]),
-                window[0], phi_hellinger(window[0])
+                window[1],
+                phi_hellinger(window[1]),
+                window[0],
+                phi_hellinger(window[0])
             );
         }
     }
@@ -671,15 +676,21 @@ mod tests {
         // Feed arm 0 with both MI and H² data
         for _ in 0..2 {
             let arm = sched.pick_arm();
-            sched.record(arm, Some(F3Sample {
-                delta_i: 0.3,
-                h_squared: Some(0.15),
-            }));
+            sched.record(
+                arm,
+                Some(F3Sample {
+                    delta_i: 0.3,
+                    h_squared: Some(0.15),
+                }),
+            );
         }
         // After 2 observations with H² data, coverage_bound should use
         // the sharpened penalty (tighter → higher coverage floor)
         let (lo_sharp, _) = sched.coverage_bound(ArmId(0), 0.10);
-        assert!(lo_sharp > 0.0, "sharpened coverage lower bound should be positive");
+        assert!(
+            lo_sharp > 0.0,
+            "sharpened coverage lower bound should be positive"
+        );
     }
 
     #[test]
@@ -689,7 +700,13 @@ mod tests {
         for expected in 0..4 {
             let arm = sched.pick_arm();
             assert_eq!(arm, ArmId(expected));
-            sched.record(arm, Some(F3Sample { delta_i: 0.1 * (expected as f64 + 1.0), h_squared: None }));
+            sched.record(
+                arm,
+                Some(F3Sample {
+                    delta_i: 0.1 * (expected as f64 + 1.0),
+                    h_squared: None,
+                }),
+            );
         }
     }
 
@@ -706,7 +723,13 @@ mod tests {
         // Exploration phase
         for _ in 0..4 {
             let arm = sched.pick_arm();
-            sched.record(arm, Some(F3Sample { delta_i: true_means[arm.0], h_squared: None }));
+            sched.record(
+                arm,
+                Some(F3Sample {
+                    delta_i: true_means[arm.0],
+                    h_squared: None,
+                }),
+            );
         }
 
         // Run 1000 steps with deterministic rewards (no noise for test clarity).
@@ -714,7 +737,13 @@ mod tests {
         let mut arm0_pulls = 0u32;
         for _ in 4..1000 {
             let arm = sched.pick_arm();
-            sched.record(arm, Some(F3Sample { delta_i: true_means[arm.0], h_squared: None }));
+            sched.record(
+                arm,
+                Some(F3Sample {
+                    delta_i: true_means[arm.0],
+                    h_squared: None,
+                }),
+            );
             if arm == ArmId(0) {
                 arm0_pulls += 1;
             }
@@ -736,9 +765,21 @@ mod tests {
         });
 
         // Arm 0: low ΔI̅ (good), arm 1: high ΔI̅ (bad)
-        sched.record(ArmId(0), Some(F3Sample { delta_i: 0.05, h_squared: Some(0.03) }));
+        sched.record(
+            ArmId(0),
+            Some(F3Sample {
+                delta_i: 0.05,
+                h_squared: Some(0.03),
+            }),
+        );
         let _ = sched.pick_arm(); // advance t
-        sched.record(ArmId(1), Some(F3Sample { delta_i: 0.5, h_squared: Some(0.4) }));
+        sched.record(
+            ArmId(1),
+            Some(F3Sample {
+                delta_i: 0.5,
+                h_squared: Some(0.4),
+            }),
+        );
 
         let (lo_good, _) = sched.coverage_bound(ArmId(0), 0.10);
         let (lo_bad, _) = sched.coverage_bound(ArmId(1), 0.10);
@@ -871,4 +912,3 @@ mod proptests {
         }
     }
 }
-

@@ -3,7 +3,7 @@
 
 Reads paired SRT files for one corpus item:
 
-    --machine    F.2-trained Sub-Zero output (terms E2/E3/E4 active)
+    --machine    F.2-trained VoiDex output (terms E2/E3/E4 active)
     --baseline   per-cue baseline (no discourse context, no voice prior)
     --reference  human-translated gold cues
     [--manifest  JSON list of {machine, baseline, reference} triples]
@@ -393,7 +393,7 @@ def load_manifest(path: Path) -> list[tuple[Path, Path, Path]]:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--machine", type=Path, help="F.2-trained Sub-Zero SRT")
+    parser.add_argument("--machine", type=Path, help="F.2-trained VoiDex SRT")
     parser.add_argument("--baseline", type=Path, help="per-cue baseline SRT")
     parser.add_argument("--reference", type=Path, help="human-reference SRT")
     parser.add_argument("--manifest", type=Path, help="JSON list of triples")
