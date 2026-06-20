@@ -1197,7 +1197,8 @@ fn escalation_backend_caches_one_translator_per_rung() {
 #[test]
 #[ignore = "live: real NLLB + llama-server; run with --ignored"]
 fn live_collapse_routing_reroutes_silent_hill() {
-    let srt = "benchmarks/runs/2026-04-22_silent_hill_f1/SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs].ja.srt";
+    let srt =
+        "benchmarks/runs/2026-04-22_silent_hill_f1/SILENT HILL f #1 加藤小夏 [0Ek5c3sQygs].ja.srt";
     let all = match crate::engine::srt::parse_srt_file(std::path::Path::new(srt)) {
         Ok(c) => c,
         Err(_) => {
@@ -1256,8 +1257,9 @@ fn live_collapse_routing_reroutes_silent_hill() {
     })
     .expect("pipeline should build");
 
+    let sink = crate::engine::events::EventSink::new(false, None, None, None).expect("event sink");
     let out = pipeline
-        .translate_with_collapse_routing(&cues, &tags)
+        .translate_with_collapse_routing(&cues, &tags, &sink)
         .expect("collapse routing should succeed");
     assert_eq!(out.len(), cues.len(), "cue count preserved");
 
@@ -1272,7 +1274,10 @@ fn live_collapse_routing_reroutes_silent_hill() {
     }
     let dom = counts.values().copied().max().unwrap_or(0);
     let density = dom as f64 / out.len() as f64;
-    eprintln!("rerouted dominant multi-word density = {density:.3} ({dom}/{})", out.len());
+    eprintln!(
+        "rerouted dominant multi-word density = {density:.3} ({dom}/{})",
+        out.len()
+    );
     for c in out.iter().take(15) {
         eprintln!("  {}", c.text);
     }

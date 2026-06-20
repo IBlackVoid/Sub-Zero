@@ -70,6 +70,9 @@ pub struct EngineState {
     pub cue_count: Option<u32>,
     pub eta_secs: Option<f64>,
     pub quality: Option<f64>,
+    /// Set when the collapse-phase router certifies a backend collapse and
+    /// reroutes the document to the local LLM rung (the CPT demo moment).
+    pub collapse_route: Option<String>,
     pub log: VecDeque<String>,
     pub output_files: Vec<PathBuf>,
     pub finished: bool,
@@ -291,6 +294,16 @@ impl EngineRunner {
         match ev.event.as_str() {
             "input_start" => {
                 self.state.anim_state = "running";
+            }
+            "collapse_route" => {
+                // CPT certified a backend-document collapse and rerouted the
+                // whole document to the local LLM rung — surface it prominently.
+                let line = ev
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "collapse certified — rerouting to local LLM".to_string());
+                self.state.collapse_route = Some(line.clone());
+                self.state.log.push_back(format!("⚠ {line}"));
             }
             "stage_complete" => {
                 if let Some(s) = ev.stage.clone() {

@@ -609,7 +609,7 @@ impl SubtitlePipeline {
         // document to the local LLM rung instead of finishing a doomed NLLB
         // pass. Falls back to a normal full NLLB translate when the LLM rung is
         // unavailable or the reroute fails — never worse than before.
-        let mut translated = self.translate_with_collapse_routing(&cues, &speaker_tags)?;
+        let mut translated = self.translate_with_collapse_routing(&cues, &speaker_tags, &events)?;
         // Q1: a non-Strict profile may have emitted best-effort output below the
         // neural MT quality floor. Capture the reason now so the sidecar verdict
         // can record verdict.pass=false while the SRT is still written.
@@ -1202,6 +1202,7 @@ impl SubtitlePipeline {
         &self,
         cues: &[SubtitleCue],
         speaker_tags: &[Vec<String>],
+        events: &EventSink,
     ) -> Result<Vec<SubtitleCue>, String> {
         use crate::engine::collapse_phase_router::{
             BackendRouteDecision, CollapsePhaseConfig, CollapsePhaseRouter,
@@ -1230,16 +1231,39 @@ impl SubtitlePipeline {
             .translate_all_with_extra_tags(&cues[..m], &speaker_tags[..m])
             .map_err(|error| error.to_string())?;
 
-        // Certify collapse from the prefix.
+        // Certify collapse from the prefix, capturing the certificate details.
         let mut router = CollapsePhaseRouter::new();
-        let certified = prefix.iter().any(|cue| {
-            matches!(
-                router.observe(&cue.text, &cfg),
-                BackendRouteDecision::AbortAndRouteWholeDocument { .. }
-            )
-        });
+        let mut certificate = None;
+        for cue in &prefix {
+            if let BackendRouteDecision::AbortAndRouteWholeDocument {
+                dominant_phrase,
+                density,
+                lower_bound,
+                cues_seen,
+            } = router.observe(&cue.text, &cfg)
+            {
+                certificate = Some((dominant_phrase, density, lower_bound, cues_seen));
+                break;
+            }
+        }
 
-        if certified {
+        if let Some((dominant_phrase, density, lower_bound, cues_seen)) = certificate {
+            // Make the collapse certificate observable (TUI / trace consume this).
+            let message = format!(
+                "collapse certified at cue {cues_seen}: \"{dominant_phrase}\" {:.0}% of output — rerouting NLLB → local LLM",
+                density * 100.0
+            );
+            events.emit(&serde_json::json!({
+                "event": "collapse_route",
+                "message": message,
+                "from": "nllb",
+                "to": "qwen3-4b",
+                "dominant_phrase": dominant_phrase,
+                "density": density,
+                "lower_bound": lower_bound,
+                "cue": cues_seen,
+                "decision": "reroute_whole_document",
+            }));
             // Reroute the whole document to the LLM rung; on any failure fall
             // back to the normal full NLLB translate (never worse than before).
             return match self.translate_whole_document_via_llm(cues) {
