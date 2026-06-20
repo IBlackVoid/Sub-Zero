@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod character_glossary;
 pub mod chunker;
+pub mod collapse_phase_router;
 pub mod context;
 pub mod deep_scan;
 pub mod doom_qlock;
