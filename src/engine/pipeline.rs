@@ -1216,25 +1216,41 @@ impl SubtitlePipeline {
 
         let cfg = CollapsePhaseConfig::default();
         // Routing only makes sense when the LLM rung can actually be the
-        // destination, the tags line up for safe slicing, and there is more
-        // document than the prefix to save.
+        // destination and the document is at least the minimum prefix.
         let llm_available =
             !self.config.force_phrase_table && crate::engine::llm_mt::resolve_llm_paths().is_some();
-        if !llm_available || speaker_tags.len() != cues.len() || cues.len() <= cfg.min_prefix_cues {
+        if !llm_available || cues.len() < cfg.min_prefix_cues {
             return full_translate();
         }
 
-        let m = cfg.min_prefix_cues;
-        // Phase 1: cheap NLLB prefix.
-        let prefix = self
+        // Inspection window: NLLB-translate the first `inspect` cues and feed them
+        // to the collapse router. Capped so a long document does not pay a full
+        // NLLB pass before deciding; for a short document it is the whole thing.
+        const INSPECT_CAP: usize = 256;
+        let inspect = cues.len().min(INSPECT_CAP);
+
+        // `speaker_tags` is either empty (speaker-awareness off, the default) or
+        // aligned 1:1 with cues. Slice accordingly — the translator accepts empty
+        // extra-tags.
+        let (window_tags, rest_tags): (&[Vec<String>], &[Vec<String>]) =
+            if speaker_tags.len() == cues.len() {
+                (&speaker_tags[..inspect], &speaker_tags[inspect..])
+            } else {
+                (&[], &[])
+            };
+
+        // Phase 1: cheap NLLB over the inspection window.
+        let window = self
             .translator
-            .translate_all_with_extra_tags(&cues[..m], &speaker_tags[..m])
+            .translate_all_with_extra_tags(&cues[..inspect], window_tags)
             .map_err(|error| error.to_string())?;
 
-        // Certify collapse from the prefix, capturing the certificate details.
+        // Certify collapse over the window: periodic checks during streaming, plus
+        // an end-of-window force-check so a short window (not a cadence multiple)
+        // is still evaluated at its largest sample.
         let mut router = CollapsePhaseRouter::new();
         let mut certificate = None;
-        for cue in &prefix {
+        for cue in &window {
             if let BackendRouteDecision::AbortAndRouteWholeDocument {
                 dominant_phrase,
                 density,
@@ -1244,6 +1260,17 @@ impl SubtitlePipeline {
             {
                 certificate = Some((dominant_phrase, density, lower_bound, cues_seen));
                 break;
+            }
+        }
+        if certificate.is_none() {
+            if let BackendRouteDecision::AbortAndRouteWholeDocument {
+                dominant_phrase,
+                density,
+                lower_bound,
+                cues_seen,
+            } = router.force_check(&cfg)
+            {
+                certificate = Some((dominant_phrase, density, lower_bound, cues_seen));
             }
         }
 
@@ -1278,11 +1305,11 @@ impl SubtitlePipeline {
         }
 
         // Not collapsed: translate the remaining cues with NLLB and combine, so
-        // the prefix work is reused rather than redone.
-        let mut out = prefix;
+        // the inspection-window work is reused rather than redone.
+        let mut out = window;
         let rest = self
             .translator
-            .translate_all_with_extra_tags(&cues[m..], &speaker_tags[m..])
+            .translate_all_with_extra_tags(&cues[inspect..], rest_tags)
             .map_err(|error| error.to_string())?;
         out.extend(rest);
         Ok(out)

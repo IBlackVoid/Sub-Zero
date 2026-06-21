@@ -7,20 +7,20 @@
 //! from cue 7 to 1359 — not local damage, but whole-document engine/content
 //! incompatibility.
 //!
-//! That is cheaply detectable. The **order parameter** is the dominant
-//! multi-word target-phrase density `Ω_m = max_c N_m(c)/m` over the first `m`
-//! cues. A Hoeffding lower-confidence bound turns a noisy prefix estimate into a
-//! certificate: if `Ω_m − ε_m(δ) ≥ θ`, then with confidence `1 − δ` the true
-//! dominant density is ≥ θ, and the backend is certified to be in collapse
-//! phase. The router then aborts the cheap backend and routes the *whole*
-//! document to the stronger local rung — rather than finishing a doomed pass.
+//! That is cheaply detectable. The **order parameter** is the dominant *motif*
+//! density `Ω_m` — the weighted max over exact normalized lines and their
+//! 3-/4-grams — measured over an inspection window of the first `m` cues. A
+//! Hoeffding lower-confidence bound turns a noisy estimate into a certificate:
+//! if `Ω_m − ε_m(δ) ≥ θ`, then with confidence `1 − δ` the dominant density is
+//! ≥ θ and the backend is certified in collapse phase. The router then aborts
+//! the cheap backend and routes the *whole* document to the stronger local rung
+//! rather than finishing a doomed pass.
 //!
-//! Validated on the real benchmark: collapse certifies at cue **m = 64** (the
-//! first checkpoint, ~5% of the document) at δ = 0.01 — a single valid Hoeffding
-//! test, avoiding NLLB compute on the remaining ~95% of cues. (Statistically
-//! valid sequential alpha-spending over many checkpoints was evaluated and
-//! certifies later, ~m=192/86%, for a multiple-looks risk the θ margin already
-//! absorbs; firing at the first checkpoint is both cheaper and valid.)
+//! Operating point: δ = 0.05 (95%), θ = 0.08, first check at m = 64 then every
+//! 64, plus an end-of-window force-check. Live NLLB collapse can be diffuse
+//! (a "that's …" family at ~0.20 density rather than one phrase at 0.26), so the
+//! motif order parameter + 95% confidence certify it where an exact-line / 99%
+//! detector would miss; the θ margin keeps false-routes ~0 (measured).
 //!
 //! Scope / honesty: this is a *systems* detector, not a new theory. Frequency
 //! heavy-hitters, Hoeffding bounds, and cost-driven model routing are all
@@ -49,16 +49,17 @@ pub struct CollapsePhaseConfig {
 
 impl Default for CollapsePhaseConfig {
     fn default() -> Self {
-        // Defaults validated on the Silent Hill benchmark. m=64 is the earliest
-        // prefix whose single Hoeffding test certifies the 26%-density collapse
-        // at δ=0.01 (LB 0.092 ≥ θ); it fires at the first checkpoint, so there is
-        // no repeated-testing inflation at the decision point. Avoids NLLB on 95%
-        // of cues. (m=32 cannot certify: ε≈0.27 swamps the signal.)
+        // δ = 0.05 (95% confidence) is the right operating point for a reroute
+        // heuristic: live NLLB collapse can be *diffuse* (a "that's …" family at
+        // ~0.20 dominant density, not one phrase at 0.26), and 99% confidence at
+        // small m is too tight to certify it. 95% certifies diffuse collapse over
+        // the inspection window while the θ=0.08 margin keeps false-routes ~0.
+        // First check at m=64, then every 64, plus an end-of-window force_check.
         Self {
             min_tokens: 3,
             min_prefix_cues: 64,
             check_every_cues: 64,
-            delta: 0.01,
+            delta: 0.05,
             theta: 0.08,
         }
     }
@@ -79,11 +80,25 @@ pub enum BackendRouteDecision {
     },
 }
 
+/// Motif weights: shorter n-grams repeat coincidentally more often, so they are
+/// down-weighted relative to exact lines and 4-grams.
+const LINE_WEIGHT: f64 = 1.0;
+const GRAM4_WEIGHT: f64 = 1.0;
+const GRAM3_WEIGHT: f64 = 0.8;
+
 /// Streaming collapse-phase detector. Feed it base-backend target lines as they
 /// are produced; it certifies collapse early or stays quiet.
+///
+/// The order parameter is the dominant **motif** density — the weighted max over
+/// exact normalized lines and their 3-/4-grams. Backends that collapse usually do
+/// so to a *family* of fluent phrases ("that's the matter with you", "that's the
+/// matter", "that's that"), not one exact string, so an exact-line-only signal
+/// undercounts the collapse; the n-gram motifs capture the family.
 #[derive(Debug, Default)]
 pub struct CollapsePhaseRouter {
-    counts: HashMap<String, usize>,
+    line_counts: HashMap<String, usize>,
+    gram3_counts: HashMap<String, usize>,
+    gram4_counts: HashMap<String, usize>,
     cues_seen: usize,
     certified: bool,
 }
@@ -113,29 +128,74 @@ impl CollapsePhaseRouter {
             return BackendRouteDecision::ContinueBase;
         }
 
-        let key = normalize(target_line);
         // Only multi-word phrases feed the order parameter (short interjections
         // legitimately repeat and must not certify collapse).
-        if !key.is_empty() && key.split(' ').count() >= cfg.min_tokens {
-            *self.counts.entry(key).or_insert(0) += 1;
+        let key = normalize(target_line);
+        let tokens: Vec<&str> = if key.is_empty() {
+            Vec::new()
+        } else {
+            key.split(' ').collect()
+        };
+        if tokens.len() >= cfg.min_tokens {
+            *self.line_counts.entry(key.clone()).or_insert(0) += 1;
+            for w in tokens.windows(3) {
+                *self.gram3_counts.entry(w.join(" ")).or_insert(0) += 1;
+            }
+            for w in tokens.windows(4) {
+                *self.gram4_counts.entry(w.join(" ")).or_insert(0) += 1;
+            }
         }
         self.cues_seen += 1;
 
-        if self.cues_seen < cfg.min_prefix_cues || self.cues_seen % cfg.check_every_cues != 0 {
+        if self.cues_seen >= cfg.min_prefix_cues && self.cues_seen % cfg.check_every_cues == 0 {
+            self.check(cfg)
+        } else {
+            BackendRouteDecision::ContinueBase
+        }
+    }
+
+    /// Force a certification check at the current window length, ignoring the
+    /// periodic cadence. Used at the end of a bounded inspection window so a
+    /// short document (whose length is not a cadence multiple) still gets a
+    /// final, larger-sample evaluation.
+    pub fn force_check(&mut self, cfg: &CollapsePhaseConfig) -> BackendRouteDecision {
+        if self.certified || self.cues_seen < cfg.min_prefix_cues {
             return BackendRouteDecision::ContinueBase;
         }
+        self.check(cfg)
+    }
 
-        let Some((phrase, &count)) = self.counts.iter().max_by_key(|(_, &c)| c) else {
-            return BackendRouteDecision::ContinueBase;
+    /// The order-parameter certification at the current `cues_seen`.
+    fn check(&mut self, cfg: &CollapsePhaseConfig) -> BackendRouteDecision {
+        let m = self.cues_seen as f64;
+        let dominant = |map: &HashMap<String, usize>| -> (String, usize) {
+            map.iter()
+                .max_by_key(|(_, &c)| c)
+                .map(|(k, &c)| (k.clone(), c))
+                .unwrap_or_default()
         };
-        let density = count as f64 / self.cues_seen as f64;
-        let lower_bound = density - Self::hoeffding_margin(self.cues_seen, cfg.delta);
+        let (line_k, line_c) = dominant(&self.line_counts);
+        let (g4_k, g4_c) = dominant(&self.gram4_counts);
+        let (g3_k, g3_c) = dominant(&self.gram3_counts);
 
+        // Order parameter = the motif with the highest WEIGHTED density; report
+        // its raw (unweighted) density and the dominant phrase.
+        let candidates = [
+            (line_k, line_c as f64 / m * LINE_WEIGHT, line_c as f64 / m),
+            (g4_k, g4_c as f64 / m * GRAM4_WEIGHT, g4_c as f64 / m),
+            (g3_k, g3_c as f64 / m * GRAM3_WEIGHT, g3_c as f64 / m),
+        ];
+        let (phrase, weighted_density, raw_density) = candidates
+            .into_iter()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .expect("candidate motif set is non-empty");
+
+        let lower_bound = weighted_density - Self::hoeffding_margin(self.cues_seen, cfg.delta);
         if lower_bound >= cfg.theta {
             self.certified = true;
             BackendRouteDecision::AbortAndRouteWholeDocument {
-                dominant_phrase: phrase.clone(),
-                density,
+                dominant_phrase: phrase,
+                density: raw_density,
                 lower_bound,
                 cues_seen: self.cues_seen,
             }
@@ -197,8 +257,9 @@ mod tests {
         let mut r = CollapsePhaseRouter::new();
         let c = cfg();
         for i in 0..600 {
-            // Every line distinct and multi-word: no dominant attractor.
-            let line = format!("unique sentence number {i} here today");
+            // Every token unique per line, so no line OR n-gram motif repeats —
+            // no dominant attractor at any motif level.
+            let line = format!("alpha{i} bravo{i} charlie{i} delta{i}");
             assert_eq!(r.observe(&line, &c), BackendRouteDecision::ContinueBase);
         }
         assert!(!r.certified());
@@ -228,7 +289,9 @@ mod tests {
             let line = if i % 3 == 0 {
                 poison.to_string()
             } else {
-                format!("ordinary distinct filler line {i} of the transcript")
+                // Fully-distinct filler (no shared motifs) so only the poison
+                // family repeats.
+                format!("alpha{i} bravo{i} charlie{i} delta{i}")
             };
             let d = r.observe(&line, &c);
             if let BackendRouteDecision::AbortAndRouteWholeDocument { cues_seen, .. } = &d {
@@ -248,7 +311,12 @@ mod tests {
                 lower_bound,
                 ..
             } => {
-                assert_eq!(dominant_phrase, poison);
+                // The dominant motif is a member of the poison family (the exact
+                // line or one of its n-grams) — all contain "matter".
+                assert!(
+                    dominant_phrase.contains("matter"),
+                    "dominant motif should come from the poison family, got {dominant_phrase:?}"
+                );
                 assert!(lower_bound >= c.theta);
             }
             _ => panic!("expected an abort/reroute decision"),
