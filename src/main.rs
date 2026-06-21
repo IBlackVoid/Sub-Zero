@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use voidex::engine::doom_qlock::DoomQlock;
 use voidex::engine::http_sidecar::{start_http_sidecar, HttpSidecarConfig};
@@ -57,15 +58,25 @@ struct Args {
     quality_profile: QualityProfile,
 }
 
-fn main() {
-    if let Err(error) = run() {
-        eprintln!("error: {error}");
-        std::process::exit(1);
+fn main() -> ExitCode {
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if should_launch_tui(&raw_args) {
+        return voidex_tui::run();
     }
+
+    if let Err(error) = run(raw_args) {
+        eprintln!("error: {error}");
+        return ExitCode::FAILURE;
+    }
+
+    ExitCode::SUCCESS
 }
 
-fn run() -> Result<(), String> {
-    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+fn should_launch_tui(raw_args: &[String]) -> bool {
+    raw_args.is_empty()
+}
+
+fn run(raw_args: Vec<String>) -> Result<(), String> {
     if is_help_requested(&raw_args) {
         println!("{}", help_text());
         return Ok(());
@@ -826,8 +837,18 @@ fn help_text() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_help_requested, parse_args};
+    use super::{is_help_requested, parse_args, should_launch_tui};
     use std::path::PathBuf;
+
+    #[test]
+    fn no_args_selects_tui_launcher() {
+        assert!(should_launch_tui(&[]));
+        assert!(!should_launch_tui(&["--help".to_string()]));
+        assert!(!should_launch_tui(&[
+            "-i".to_string(),
+            "video.mkv".to_string()
+        ]));
+    }
 
     #[test]
     fn parse_positional_inputs() {

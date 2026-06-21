@@ -68,8 +68,8 @@ cargo build --release
 ```
 
 binaries land in `target/release/`:
-- `voidex` — the engine CLI
-- `voidex-tui` — the live dashboard
+- `voidex` — opens the live dashboard with no arguments; runs the engine CLI when passed input/options
+- `voidex-tui` — direct dashboard entry point when building the whole workspace
 
 ### prerequisites
 
@@ -92,7 +92,7 @@ voidex -i podcast.mp4 --source-lang en --lang en --gpu
 voidex -i existing.ja.srt --lang en
 
 # fire up the dashboard
-voidex-tui
+voidex
 ```
 
 ### models (one-time setup)
@@ -138,7 +138,7 @@ video.mkv
 ## the dashboard
 
 ```bash
-cargo run -p voidex-tui --release
+voidex
 ```
 
 a live terminal dashboard. shows the pipeline as it runs, cues as they

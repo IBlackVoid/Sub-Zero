@@ -58,6 +58,7 @@ memchr = "2"
 # content-addressed demand-driven build graph that may become the
 # engine's execution model (see `docs/adr/0001-content-addressed-build-graph.md`).
 sha2 = "0.10"
+voidex-tui = { path = "tui" }
 
 [dev-dependencies]
 # Criterion gives us statistically-meaningful microbench numbers for the
