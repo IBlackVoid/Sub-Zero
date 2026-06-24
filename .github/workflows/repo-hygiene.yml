@@ -23,7 +23,7 @@ jobs:
     name: forbidden file patterns
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Need full history for diff-based checks on PRs.
           fetch-depth: 0
