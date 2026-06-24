@@ -134,7 +134,7 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Cache advisory db
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/advisory-db
           key: advisory-db-${{ github.run_id }}
